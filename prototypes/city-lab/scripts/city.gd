@@ -7,6 +7,13 @@ const ROWS = 14
 const FIRST = ["Alex", "Sam", "Charlie", "Morgan", "Jamie", "Riley", "Ash", "Taylor", "Billie", "Jordan", "Casey", "Drew", "Lee", "Frankie", "Pat", "Jess"]
 const LAST = ["Kelly", "Nguyen", "Singh", "Wilson", "Brown", "Chen", "Williams", "Jones", "Patel", "Smith", "Martin", "Ryan"]
 const DRINKS = ["Flat white", "Long black", "Tea", "Iced coffee"]
+const PERIODS = [
+	{"name":"Early morning", "start":360, "end":540},
+	{"name":"Morning", "start":540, "end":660},
+	{"name":"Lunch", "start":660, "end":840},
+	{"name":"Afternoon", "start":840, "end":1080}
+]
+var depot = Vector2.ZERO
 const MEALS = ["Meat pie", "Salad wrap", "Toastie", "Veggie roll"]
 const INDUSTRIES = [
 	{"name":"Engineering", "sprite":0, "mix":[0,7,12]},
@@ -36,6 +43,7 @@ var width = COLS * BLOCK
 var height = ROWS * BLOCK
 
 func generate(seed_value: int) -> void:
+	depot = Vector2.ZERO
 	city_seed = seed_value
 	precincts.clear()
 	industrial_blocks.clear()
@@ -95,13 +103,26 @@ func generate(seed_value: int) -> void:
 					sprite = industry.sprite if rng.randf()<0.75 else industry.mix[rng.randi_range(0,industry.mix.size()-1)]
 				var name = ["Wattle", "Banksia", "Ironbark", "River", "Coastal", "Southern"][rng.randi_range(0,5)] + " " + BUILDINGS[sprite]
 				var p = {"id":properties.size(), "name":name, "zone":"Industrial" if industrial else "Commercial", "precinct":district_id, "sprite":sprite, "rect":rect, "access":access, "staff":[], "style":rng.randi_range(0,3), "orders":0}
+				p["customer"] = rng.randf() >= 0.28
 				var count = rng.randi_range(12,36) if industrial else rng.randi_range(5,22)
 				for j in range(count):
 					var start = rng.randi_range(360,420) if industrial else rng.randi_range(480,540)
 					var worker = {"id":workers.size(), "name":FIRST[rng.randi_range(0,15)]+" "+LAST[rng.randi_range(0,11)], "property":p.id, "start":start, "end":start+480, "coffee_break":start+rng.randi_range(50,110), "lunch":start+rng.randi_range(210,270), "drink":DRINKS[rng.randi_range(0,3)], "meal":MEALS[rng.randi_range(0,3)], "last_drink":-9999.0, "last_meal":-9999.0, "orders":0}
+					worker["drink_periods"] = []
+					worker["meal_periods"] = []
+					worker["served_drinks"] = []
+					worker["served_meals"] = []
+					for period in range(4):
+						# Broad windows: staff available during any part of the period
+						# can be served throughout it; no minute-perfect appointments.
+						var available = start < PERIODS[period].end and worker.end > PERIODS[period].start
+						if p.customer and available:
+							if rng.randf() < [0.75,0.85,0.4,0.6][period]: worker.drink_periods.append(period)
+							if rng.randf() < [0.15,0.2,0.9,0.25][period]: worker.meal_periods.append(period)
 					p.staff.append(worker.id)
 					workers.append(worker)
 				properties.append(p)
+	_prepare_day()
 
 func _generate_roads(rng: RandomNumberGenerator) -> void:
 	roads.clear()
@@ -207,21 +228,53 @@ func property_at(point: Vector2) -> int:
 		if p.rect.has_point(point): return p.id
 	return -1
 
+func period_at(at: float) -> int:
+	for i in range(PERIODS.size()):
+		if at >= PERIODS[i].start and at < PERIODS[i].end: return i
+	return -1
+
+func _prepare_day() -> void:
+	# Daily turnout varies, but this seed/day always gives the same outcome.
+	var rng = RandomNumberGenerator.new()
+	rng.seed = city_seed * 1000003 + day * 7919
+	for p in properties:
+		p["turnout"] = rng.randf_range(0.70,1.0)
+	for w in workers:
+		w["today_drinks"] = []
+		w["today_meals"] = []
+		# A small timing buffer; periods remain distinct for route planning.
+		w["boundaries"] = [360,540+rng.randi_range(-8,8),660+rng.randi_range(-8,8),840+rng.randi_range(-8,8),1080]
+		for period in w.drink_periods:
+			if rng.randf()<properties[w.property].turnout: w.today_drinks.append(period)
+		for period in w.meal_periods:
+			if rng.randf()<properties[w.property].turnout: w.today_meals.append(period)
+
+func worker_period(w: Dictionary, at: float) -> int:
+	for i in range(4):
+		if at>=w.boundaries[i] and at<w.boundaries[i+1]: return i
+	return -1
+
 func wants(w: Dictionary, at: float) -> Array:
 	var result: Array = []
-	if at < w.start or at >= w.end: return result
-	if at >= w.coffee_break-20 and at <= w.coffee_break+60 and at-w.last_drink >= 150:
-		result.append(w.drink)
-	elif at >= w.lunch and at <= w.lunch+45 and at-w.last_drink >= 150:
-		result.append(w.drink)
-	if at >= w.lunch-15 and at <= w.lunch+45 and at-w.last_meal >= 240:
-		result.append(w.meal)
+	var period = worker_period(w,at)
+	if period < 0: return result
+	if period in w.today_drinks and not period in w.served_drinks: result.append(w.drink)
+	if period in w.today_meals and not period in w.served_meals: result.append(w.meal)
 	return result
 
-func demand(property_id: int) -> Dictionary:
+func demand(property_id: int, at: float = -1) -> Dictionary:
 	var result = {}
 	for id in properties[property_id].staff:
-		for item in wants(workers[id],clock): result[item] = result.get(item,0)+1
+		for item in wants(workers[id],clock if at<0 else at): result[item] = result.get(item,0)+1
+	return result
+
+func demand_summary(property_id: int, period: int) -> Vector2i:
+	var result = Vector2i.ZERO
+	if period<0: return result
+	for id in properties[property_id].staff:
+		var w = workers[id]
+		if period in w.drink_periods and not period in w.served_drinks: result.x += 1
+		if period in w.meal_periods and not period in w.served_meals: result.y += 1
 	return result
 
 func serve(property_id: int) -> Dictionary:
@@ -230,8 +283,8 @@ func serve(property_id: int) -> Dictionary:
 		var w = workers[id]
 		for item in wants(w,clock):
 			result[item] = result.get(item,0)+1
-			if item in DRINKS: w.last_drink = clock
-			else: w.last_meal = clock
+			if item in DRINKS: w.served_drinks.append(worker_period(w,clock))
+			else: w.served_meals.append(worker_period(w,clock))
 			w.orders += 1
 			total_orders += 1
 			properties[property_id].orders += 1
@@ -245,4 +298,7 @@ func next_day() -> void:
 	for w in workers:
 		w.last_drink = -9999.0
 		w.last_meal = -9999.0
+		w.served_drinks.clear()
+		w.served_meals.clear()
 		w.orders = 0
+	_prepare_day()

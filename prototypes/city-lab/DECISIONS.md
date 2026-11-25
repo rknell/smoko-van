@@ -37,3 +37,9 @@ Godot's [renderer overview](https://docs.godotengine.org/en/stable/tutorials/ren
 ## Landscape and city character update
 
 Android now scales the UI independently of physical display pixels and runs in either landscape orientation. Close-up camera framing and 52-unit buttons make properties and controls usable on phones. Sixteen generated building sprites are mapped to business types. Industrial specialisms are shuffled across nine separated precincts; commercial areas provide buffers. Road generation preserves connectivity and actual property access while creating measurable detours.
+
+## Broad demand and depot placement (v0.1.3)
+
+Supersedes exact break timing and the fixed north-west base: four broad periods replace minute-sensitive demand. Individual preferences remain, but around 28% of workplaces never buy. Each worker orders each desired category at most once per period. Shift overlap makes the whole period available. Map cup/food icons and a period preview replace worker-level UI. The player may relocate the roadside depot before departure; existing routes recalculate and subsequent days retain it. New city generation resets it.
+
+Demand is intentionally fuzzy: forecasts show light/steady/busy (1–5, 6–14, 15+ usual requests) rather than exact counts; each business draws a daily 70–100% turnout probability for its usual requests; worker period boundaries jitter by ±8 minutes. Seed plus day reproduces all variation. Current map badges use actual outstanding requests, grouped into these same levels. No customers ever appear at designated non-customer businesses.

@@ -1,6 +1,15 @@
 extends Control
 const City = preload("res://scripts/city.gd")
 const BUILDING_ATLAS = preload("res://assets/buildings-atlas.png")
+const DRINK_ICON = preload("res://assets/drink.svg")
+const FOOD_ICON = preload("res://assets/food.svg")
+var placing_depot = false
+var depot_button: Button
+var shuffle_button: Button
+var header_row: HBoxContainer
+var status_row: HBoxContainer
+var period_picker: OptionButton
+var demand_badges = []
 var city = City.new()
 var zoom = 0.3
 var centre = Vector2(2160,1680)
@@ -102,6 +111,7 @@ func _build_ui() -> void:
 	title.add_theme_color_override("font_color",Color("efc56b"))
 	top.add_child(title)
 	var row = HBoxContainer.new()
+	header_row = row
 	top.add_child(row)
 	seed_input = LineEdit.new()
 	seed_input.text = "1987"
@@ -110,14 +120,24 @@ func _build_ui() -> void:
 	seed_input.tooltip_text = "Same seed recreates the same city and workers."
 	row.add_child(seed_input)
 	_button("New",_generate,row)
-	_button("Shuffle",func(): seed_input.text=str(randi()%999999); _generate(),row)
+	shuffle_button = _button("Shuffle",func(): seed_input.text=str(randi()%999999); _generate(),row)
 	_button("Fit",_fit,row)
 	_button("−",func(): _zoom_at(0.8,map_rect.get_center()),row)
 	_button("+",func(): _zoom_at(1.25,map_rect.get_center()),row)
 	van_button = _button("Van",_focus_van,row)
+	depot_button = _button("Depot",_choose_depot,row)
 	status = Label.new()
 	status.add_theme_font_size_override("font_size",16 if mobile_layout else 13)
-	top.add_child(status)
+	status_row = HBoxContainer.new()
+	top.add_child(status_row)
+	status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	status_row.add_child(status)
+	period_picker = OptionButton.new()
+	period_picker.add_item("Demand: now")
+	for period in City.PERIODS: period_picker.add_item(period.name)
+	period_picker.item_selected.connect(func(_index): _update_ui(); queue_redraw())
+	period_picker.custom_minimum_size.y = 52 if mobile_layout else 44
+	header_row.add_child(period_picker)
 	sidebar = _panel()
 	route_box = VBoxContainer.new()
 	sidebar.add_child(route_box)
@@ -142,7 +162,8 @@ func _build_ui() -> void:
 	info.bbcode_enabled = true
 	info.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	info.custom_minimum_size.y = 100
-	info.add_theme_font_size_override("normal_font_size",18 if mobile_layout else 14)
+	info.add_theme_font_size_override("normal_font_size",16 if mobile_layout else 14)
+	info.add_theme_font_size_override("bold_font_size",16 if mobile_layout else 16)
 	route_box.add_child(info)
 
 func _layout() -> void:
@@ -151,7 +172,11 @@ func _layout() -> void:
 	header.position = Vector2.ZERO
 	var header_height = 96 if mobile_layout or (size.x>=680 and size.y<600) else 126
 	title.visible = header_height==126
-	van_button.visible = not narrow
+	van_button.visible = not narrow and not mobile_layout
+	shuffle_button.visible = not narrow
+	var picker_parent = status_row if narrow else header_row
+	if period_picker.get_parent()!=picker_parent: period_picker.reparent(picker_parent)
+	if narrow: title.visible=false
 	header.size = Vector2(size.x,header_height)
 	if narrow:
 		title.text = "SMOKO / CITY LAB"
@@ -165,7 +190,7 @@ func _layout() -> void:
 		sidebar.position = Vector2(size.x-panel_width,header_height)
 		sidebar.size = Vector2(panel_width,size.y-header_height)
 		map_rect = Rect2(0,header_height,size.x-panel_width,size.y-header_height)
-		route_info.custom_minimum_size.y = 58 if size.y < 600 else 120
+		route_info.custom_minimum_size.y = 48 if size.y < 600 else 120
 		info.custom_minimum_size.y = 70 if size.y < 600 else 100
 	queue_redraw()
 
@@ -198,16 +223,26 @@ func _generate() -> void:
 		message = "Use a whole number for the city seed."
 		_update_ui()
 		return
+	placing_depot = false
 	city.generate(int(seed_input.text))
 	selected = -1
 	_clear()
 	if mobile_layout: _focus_van()
 	else: _fit()
 
+func _choose_depot() -> void:
+	if started:
+		message = "Start the next day or clear the run to move your depot."
+	else:
+		placing_depot = not placing_depot
+		message = "Tap a building or road for your depot. Tap Cancel to keep it." if placing_depot else "Depot unchanged."
+	_update_ui()
+
 func _clear() -> void:
+	placing_depot = false
 	stops.clear()
 	legs.clear()
-	van = Vector2.ZERO
+	van = city.depot
 	travelling = false
 	started = false
 	dwell = 0
@@ -228,7 +263,7 @@ func _undo() -> void:
 
 func _rebuild() -> void:
 	legs.clear()
-	var previous = Vector2.ZERO
+	var previous = city.depot
 	distance = 0
 	for stop in stops:
 		var points = city.path(previous,stop.point)
@@ -238,6 +273,10 @@ func _rebuild() -> void:
 	queue_redraw()
 
 func _toggle_drive() -> void:
+	if placing_depot:
+		message = "Place your depot or tap Cancel before driving."
+		_update_ui()
+		return
 	if city.clock >= 1080:
 		message = "Day finished. Start the next day to drive again."
 	elif stops.is_empty():
@@ -247,12 +286,13 @@ func _toggle_drive() -> void:
 	else:
 		travelling = not travelling
 		started = true
-		message = "Following roads. Free service at each property." if travelling else "Paused. Inspect any property or worker."
+		message = "Following roads. Free service at each property." if travelling else "Paused. Tap a property to see demand."
 	_update_ui()
 
 func _next_day() -> void:
+	placing_depot = false
 	city.next_day()
-	van = Vector2.ZERO
+	van = city.depot
 	travelling = false
 	started = false
 	leg_index = 0
@@ -322,6 +362,19 @@ func _unhandled_input(event: InputEvent) -> void:
 func _tap(point: Vector2) -> void:
 	if point.x < -30 or point.y < -30 or point.x > city.width+30 or point.y > city.height+30: return
 	selected = city.property_at(point)
+	if placing_depot:
+		var access = city.properties[selected].access if selected>=0 else city.road_point(point)
+		if selected<0 and access.distance_to(point)>32:
+			message = "Place the depot beside a building or on a road."
+		else:
+			city.depot = access
+			van = access
+			placing_depot = false
+			_rebuild()
+			message = "Depot placed. Your route starts here."
+		_update_ui()
+		queue_redraw()
+		return
 	if route_mode and not started:
 		var target = city.properties[selected].access if selected>=0 else city.road_point(point)
 		if selected<0 and target.distance_to(point)>32:
@@ -385,31 +438,42 @@ func _time(minutes: float) -> String:
 
 func _update_ui() -> void:
 	if not is_instance_valid(status): return
-	status.text = "D%d · %s  |  %d properties · %s workers" % [city.day,_time(city.clock),city.properties.size(),str(city.workers.size())]
+	var current_period = city.period_at(city.clock)
+	status.text = "Day %d · %s · %s" % [city.day,_time(city.clock),City.PERIODS[current_period].name if current_period>=0 else "Closed"]
+	depot_button.text = "Cancel" if placing_depot else "Depot"
+	var shown_period = city.period_at(city.clock) if period_picker.selected==0 else period_picker.selected-1
+	demand_badges.clear()
+	for property in city.properties:
+		if period_picker.selected==0:
+			var amounts = Vector2i.ZERO
+			var actual = city.demand(property.id)
+			for item in actual:
+				if item in City.DRINKS: amounts.x+=actual[item]
+				else: amounts.y+=actual[item]
+			demand_badges.append(amounts)
+		else: demand_badges.append(city.demand_summary(property.id,shown_period))
+	queue_redraw()
 	mode_button.text = "Route ✓" if route_mode else "Inspect"
 	run_button.text = "Pause" if travelling else ("Resume" if started and leg_index<legs.size() else "Drive")
-	var route_text = "[color=#efc56b]%d STOPS · %.1f km · %d free orders[/color]\n%s\n" % [stops.size(),distance/1000,city.total_orders,message]
+	var route_text = "[color=#efc56b]%d STOPS · %.1f km[/color]\n%s\n" % [stops.size(),distance/1000,message]
 	for i in range(stops.size()):
 		var p = stops[i].property
 		route_text += "%d. %s%s\n" % [i+1,city.properties[p].name if p>=0 else "Road waypoint"," ✓" if i<leg_index else ""]
 	if route_info.text != route_text: route_info.text = route_text
 	if selected<0:
-		var instructions = "[b]Plan your run[/b]\n\nTap a building to add a stop and see what they want.\n\nDrag to explore · Pinch or + / − to zoom."
+		var instructions = "[b]Plan your run[/b]\n[img=22x22]res://assets/drink.svg[/img] Drinks   [img=22x22]res://assets/food.svg[/img] Food\nDots show light / steady / busy.\nPeriods are a guide, not a deadline."
 		if info.text != instructions: info.text = instructions
 		return
 	var p = city.properties[selected]
-	var drinks = 0
-	var food = 0
-	var demand = city.demand(selected)
-	for item in demand:
-		if item in City.DRINKS: drinks += demand[item]
-		else: food += demand[item]
-	var summary = "[color=#efc56b][b]%s[/b][/color]\n%d staff\n\n[b]Wanted now[/b]\n" % [p.name,p.staff.size()]
-	if drinks+food == 0:
-		summary += "No orders right now."
+	var summary = "[color=#efc56b][b]%s[/b][/color]\n" % p.name
+	if not p.customer:
+		summary += "No van customers here."
 	else:
-		summary += "%d drinks   ·   %d meals" % [drinks,food]
-	summary += "\n\n%d orders served today" % p.orders
+		for period in range(4):
+			var amounts = city.demand_summary(selected,period)
+			var line = "%s  [img=18x18]res://assets/drink.svg[/img]%s [img=18x18]res://assets/food.svg[/img]%s" % [City.PERIODS[period].name,_demand_dots(amounts.x),_demand_dots(amounts.y)]
+			if period==shown_period: line = "[color=#efc56b]"+line+"[/color]"
+			summary += line+"\n"
 	if info.text != summary: info.text = summary
 
 func _draw() -> void:
@@ -458,6 +522,20 @@ func _draw() -> void:
 		var source = Rect2(Vector2(p.sprite%4,p.sprite/4)*cell,cell)
 		draw_texture_rect_region(BUILDING_ATLAS,r,source)
 		if p.id==selected: draw_rect(r.grow(3),Color("fff0b3"),false,2)
+		if zoom>0.25 and p.id<demand_badges.size():
+			var amounts = demand_badges[p.id]
+			if amounts.x+amounts.y>0:
+				var count = int(amounts.x>0)+int(amounts.y>0)
+				var badge = Rect2(r.get_center().x-count*10,r.position.y-25,count*20,27)
+				draw_style_box(_badge_style(),badge)
+				var icon_x = badge.position.x
+				if amounts.x>0:
+					draw_texture_rect(DRINK_ICON,Rect2(icon_x,badge.position.y,18,18),false)
+					_draw_demand_dots(Vector2(icon_x,badge.position.y+22),amounts.x)
+					icon_x+=20
+				if amounts.y>0:
+					draw_texture_rect(FOOD_ICON,Rect2(icon_x,badge.position.y,18,18),false)
+					_draw_demand_dots(Vector2(icon_x,badge.position.y+22),amounts.y)
 	for district in city.precincts:
 		var at = screen(district.centre-Vector2(120,120))
 		if not map_rect.has_point(at): continue
@@ -477,7 +555,7 @@ func _draw() -> void:
 		if not map_rect.has_point(at): continue
 		draw_circle(at,11,Color("f4c45f") if i>=leg_index else Color("80c8b4"))
 		draw_string(ui_font,at+Vector2(-5,5),str(i+1),HORIZONTAL_ALIGNMENT_LEFT,-1,13,Color("192f32"))
-	var depot = screen(Vector2.ZERO)
+	var depot = screen(city.depot)
 	draw_rect(Rect2(depot-Vector2(12,12),Vector2(24,24)),Color("e7e5ca"))
 	draw_string(ui_font,depot+Vector2(16,5),"DEPOT",HORIZONTAL_ALIGNMENT_LEFT,-1,13,Color("f0edce"))
 	var v = screen(van)
@@ -488,3 +566,23 @@ func _draw() -> void:
 	draw_string(ui_font,map_rect.position+Vector2(18,26),"N ↑   /   WATTLE METRO",HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color("f0edce"))
 	draw_string(ui_font,map_rect.end-Vector2(165,16),"%.0f m / 100 px" % (100/zoom),HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("f0edce"))
 
+
+func _badge_style() -> StyleBoxFlat:
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color("172b30")
+	style.set_corner_radius_all(5)
+	return style
+
+func _demand_level(amount: int) -> int:
+	if amount<=0: return 0
+	if amount<=5: return 1
+	if amount<=14: return 2
+	return 3
+
+func _demand_dots(amount: int) -> String:
+	return ["–","•","••","•••"][_demand_level(amount)]
+
+func _draw_demand_dots(at: Vector2, amount: int) -> void:
+	var level = _demand_level(amount)
+	for i in range(3):
+		draw_circle(at+Vector2(4+i*5,0),1.7,Color("ffdb8a") if i<level else Color("4d6668"),true,-1,true)

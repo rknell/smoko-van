@@ -59,18 +59,38 @@ func _initialize() -> void:
 			check(p.sprite>=0 and p.sprite<16,"Valid building atlas cell")
 			if p.zone=="Industrial": check(p.precinct>=0,"Every industrial property has a precinct")
 		check(sprites.size()==16,"All sixteen building graphics have uses")
-	var worker = c.workers[0]
-	c.clock=worker.coffee_break
-	var wants_before=c.wants(worker,c.clock)
-	check(worker.drink in wants_before,"Personal break drives individual demand")
+	var inactive = 0
+	for p in c.properties:
+		if not p.customer:
+			inactive += 1
+			for period in range(4): check(c.demand_summary(p.id,period)==Vector2i.ZERO,"Non-customer businesses never order")
+	check(inactive>100 and inactive<c.properties.size()/2,"City mixes customers and non-customers")
+	var worker = c.workers.filter(func(w): return not w.today_drinks.is_empty())[0]
+	var period = worker.today_drinks[0]
+	c.clock=City.PERIODS[period].start+30
+	check(worker.drink in c.wants(worker,c.clock),"Worker wants a drink within broad window")
+	check(c.wants(worker,c.clock)==c.wants(worker,City.PERIODS[period].end-30),"Demand stable across the core of a broad window")
 	var orders=c.serve(worker.property)
 	check(orders.get(worker.drink,0)>0,"Free service fulfils actual individual demand")
 	check(not worker.drink in c.wants(worker,c.clock),"Satisfied worker cannot instantly order again")
 	var total=c.total_orders
 	c.serve(worker.property)
-	check(c.total_orders==total,"Repeated service at same minute does not create orders")
-	check(c.wants(worker,worker.end+1).is_empty(),"Off-shift workers do not order")
+	check(c.total_orders==total,"Repeated service cannot farm orders")
+	check(c.period_at(539)==0 and c.period_at(540)==1 and c.period_at(660)==2 and c.period_at(840)==3,"Window boundaries")
+	check(c.wants(worker,1080).is_empty(),"No demand after closing")
+	var first_day = c.workers.duplicate(true)
 	c.next_day()
+	check(c.workers!=first_day,"Daily turnout varies")
 	check(c.total_orders==0 and worker.orders==0,"New day resets service history")
+	check(worker.served_drinks.is_empty() and worker.served_meals.is_empty(),"New day resets served periods")
+	var boundary_values = {}
+	for w in c.workers: boundary_values[w.boundaries[1]]=true
+	check(boundary_values.size()>10,"Small timing buffer varies between workers")
+	for w in c.workers:
+		check(abs(w.boundaries[1]-540)<=8 and abs(w.boundaries[2]-660)<=8 and abs(w.boundaries[3]-840)<=8,"Periods retain clear boundaries")
+	var replay = City.new()
+	replay.generate(c.city_seed)
+	replay.next_day()
+	check(c.workers==replay.workers,"Same seed and day reproduces fuzzy demand")
 	print("City model checks: ","PASS" if failures==0 else "FAIL", " · ",c.properties.size()," properties / ",c.workers.size()," individuals")
 	quit(failures)
