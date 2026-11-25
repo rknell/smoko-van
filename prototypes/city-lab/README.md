@@ -35,7 +35,7 @@ Native Linux export is also configured. Godot can target Windows, macOS, Android
 - **Drive / Pause / Resume:** run or pause the van and population clock. **1× / 4×:** simulation speed.
 - **Undo:** remove the last planned stop. **Clear:** stop the run and clear its route. Clear preserves the day's worker orders; it is not a new day.
 - **Next day:** keep the route and workers, reset their appetites and the van, and return to 07:30. Routes can then be edited again.
-- Scroll the property inspector to see every staff member and their current requests. Scroll the route list to see all placed stops.
+- The property panel shows staff count, drinks and meals wanted now, and orders served today. Individual staff are still simulated behind this summary. Scroll the route list to see all placed stops.
 
 ## Model
 
@@ -98,3 +98,7 @@ Android supports either landscape orientation, a density-independent 800×400 lo
 This update also includes the sixteen generated building sprites, nine industrial precincts, and irregular connected streets with cul-de-sacs. Tests check deterministic road generation, genuine detours, dead ends, reachable property entrances, cluster separation, all sprite mappings, input gestures and high-density phone layouts. APK version code is 2, signed with the same local debug key as v0.1.0. Native physical-device testing remains outstanding.
 
 Asset provenance and the full built-in image-generation prompt are in [assets/README.md](assets/README.md).
+
+## v0.1.2 — simpler stops
+
+Rounded street corners, junctions and dead-end caps soften the map. The sidebar now shows a compact drinks/meal demand summary instead of individual worker schedules. Android version code 3.

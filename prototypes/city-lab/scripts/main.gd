@@ -394,21 +394,23 @@ func _update_ui() -> void:
 		route_text += "%d. %s%s\n" % [i+1,city.properties[p].name if p>=0 else "Road waypoint"," ✓" if i<leg_index else ""]
 	if route_info.text != route_text: route_info.text = route_text
 	if selected<0:
-		var instructions = "[b]A city of individual people.[/b]\n\n[color=#72c8bd]■ Commercial[/color]   [color=#d6a16c]■ Industrial[/color]\nNine named industrial precincts, each with its own specialty. Roads have real detours and signed dead ends.\n\nRoute mode: tap buildings or streets.\nInspect mode: tap without adding stops.\nDrag to pan. Scroll / pinch / + − to zoom.\n\nEvery worker has a shift, a break, preferences and their own recent orders. The van supplies requests for free. No money, stock, loyalty or combat.\n\nStart at the north-west depot. Routes follow connected streets. Seed %d recreates this city." % city.city_seed
+		var instructions = "[b]Plan your run[/b]\n\nTap a building to add a stop and see what they want.\n\nDrag to explore · Pinch or + / − to zoom."
 		if info.text != instructions: info.text = instructions
 		return
-	var saved_scroll = info.get_v_scroll_bar().value
 	var p = city.properties[selected]
-	var district_name = city.precincts[p.precinct].name if p.precinct>=0 else "Commercial neighbourhood"
-	var people_text = "[color=#efc56b][b]%s[/b][/color]\n%s\n%s · %d staff · %d orders today\n\n[b]Wanted now[/b]\n%s\n\n[b]People · individual schedules[/b]\n" % [p.name,district_name,p.zone,p.staff.size(),p.orders,_orders(city.demand(selected))]
-	for id in p.staff:
-		var w = city.workers[id]
-		var requests = city.wants(w,city.clock)
-		people_text += "\n[b]%s #%d[/b]  ·  %s–%s\n%s / %s\nBreak %s · Lunch %s\n[color=#9db6b7]%s · %d orders today[/color]\n" % [w.name,w.id,_time(w.start),_time(w.end),w.drink,w.meal,_time(w.coffee_break),_time(w.lunch),", ".join(requests) if not requests.is_empty() else "Not hungry / off shift",w.orders]
-
-	if info.text != people_text:
-		info.text = people_text
-		info.get_v_scroll_bar().set_deferred("value",saved_scroll)
+	var drinks = 0
+	var food = 0
+	var demand = city.demand(selected)
+	for item in demand:
+		if item in City.DRINKS: drinks += demand[item]
+		else: food += demand[item]
+	var summary = "[color=#efc56b][b]%s[/b][/color]\n%d staff\n\n[b]Wanted now[/b]\n" % [p.name,p.staff.size()]
+	if drinks+food == 0:
+		summary += "No orders right now."
+	else:
+		summary += "%d drinks   ·   %d meals" % [drinks,food]
+	summary += "\n\n%d orders served today" % p.orders
+	if info.text != summary: info.text = summary
 
 func _draw() -> void:
 	if city.properties.is_empty(): return
@@ -417,14 +419,21 @@ func _draw() -> void:
 	# draw UI panels above the world so off-map geometry never covers controls.
 	var land = Rect2(screen(Vector2(-30,-30)),Vector2(city.width+60,city.height+60)*zoom)
 	draw_rect(land,Color("658576"))
+	# Round every street endpoint, including corners and T-junctions. Draw
+	# junction caps after the road markings so lines do not cross intersections.
+	var junctions = {}
 	for road in city.roads:
 		var a = screen(road[0])
 		var b = screen(road[1])
 		draw_line(a,b,Color("26393b"),maxf(1,36*zoom))
 		if zoom>0.18: draw_line(a,b,Color("667770"),maxf(1,zoom))
+		junctions[road[0]] = true
+		junctions[road[1]] = true
+	for junction in junctions:
+		draw_circle(screen(junction),18*zoom,Color("26393b"),true,-1,true)
 	for endpoint in city.dead_ends:
 		var at = screen(endpoint)
-		draw_circle(at,23*zoom,Color("26393b"))
+		draw_circle(at,23*zoom,Color("26393b"),true,-1,true)
 		if zoom>0.22:
 			draw_rect(Rect2(at+Vector2(13,-14)*zoom,Vector2(16,18)*zoom),Color("598db0"))
 			draw_line(at+Vector2(21,-11)*zoom,at+Vector2(21,0)*zoom,Color.WHITE,maxf(1,3*zoom))
