@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#202c28">
+  <meta name="description" content="Run the route. Rule the smoko. An Australian food van business game.">
+  <title>Smoko Van — Welcome to Wattle Creek</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="masthead"><div class="brand"><span class="brand-icon">SV</span><div><h1>SMOKO VAN<span class="version">v0.2</span></h1><p>GOOD TUCKER. QUESTIONABLE TACTICS.</p></div></div><div id="stats" class="stats"></div><button id="help-button" class="icon-button" aria-label="How to play">?</button></header>
+  <main>
+    <section class="town-panel"><div class="town-heading"><div><span class="eyebrow">YOUR PATCH / QUEENSLAND</span><h2>Wattle Creek<span class="live-dot"></span></h2></div><div id="weather" class="weather"></div></div>
+      <div class="map-wrap"><div class="map-viewport"><canvas id="map" width="960" height="640" aria-label="Wattle Creek map showing roads, stops and van routes. Select stops using the Stops tab." role="img"></canvas></div><button id="map-zoom" class="map-zoom" aria-label="Zoom map">+</button><div class="map-label">WATTLE CREEK SHIRE <span>EST. 1987</span></div><div class="map-legend"><span><i class="mint"></i>Your route</span><span><i class="red"></i>Big Kev's patch</span><span>Tap a stop to inspect</span></div></div>
+      <div class="transport"><div class="clock"><strong id="clock">08:00</strong><span id="phase">PREP TIME</span></div><div class="timeline"><div id="day-progress"></div></div><div class="speed-controls"><button id="pause" aria-label="Pause or resume">Pause</button><button id="speed">1×</button></div><button id="start" class="primary">Open for business →</button></div>
+      <section class="feedback"><div class="section-heading"><h3>THE WORD ON THE STREET</h3><span id="feed-count">LIVE FEEDBACK</span></div><div id="feed" aria-live="polite"></div></section>
+    </section>
+    <aside class="management"><div class="fleet-select"><label for="van-select">YOUR FLEET</label><select id="van-select"></select><span id="van-state"></span></div><nav aria-label="Management"><button data-tab="route" class="active">Route</button><button data-tab="stock">Stock</button><button data-tab="stops">Stops</button><button data-tab="hq">HQ</button><button data-tab="board">Board</button></nav><div id="panel" class="panel"></div></aside>
+  </main>
+  <footer><span>SMALL BUSINESS. BIG NONSENSE.</span><span>Local autosave · <button id="export">Export save</button> · <label class="import-label">Import save<input id="import" type="file" accept="application/json" hidden></label> · <button id="reset">New game</button></span></footer>
+  <dialog id="modal"></dialog><div id="toast" role="status"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
