@@ -2,6 +2,10 @@
 
 Version 0.2 of the Australian food-van business game. Run a route through Wattle Creek, keep the crew fed and deal with Big Kev's territorial nonsense.
 
+## New city prototype
+
+A separate Godot experiment lives in [prototypes/city-lab](prototypes/city-lab/README.md): a seeded city, individual workers and click/tap road routes, without economics. The original game below remains independent.
+
 ## Run locally
 
 Requires Node.js 20 or newer. There are no package dependencies to install.
