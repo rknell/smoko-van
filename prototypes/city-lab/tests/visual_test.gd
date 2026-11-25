@@ -20,6 +20,7 @@ func run() -> void:
 	await RenderingServer.frame_post_draw
 	root.get_texture().get_image().save_png("res://screenshots/mobile.png")
 	for button in scene.find_children("*","Button",true,false):
+		if not button.is_visible_in_tree(): continue
 		assert(button.get_global_rect().end.x<=391,"Button outside phone width: "+button.text)
 		assert(button.get_global_rect().end.y<=845,"Button outside phone height: "+button.text)
 	root.size=Vector2i(844,390)
@@ -30,6 +31,7 @@ func run() -> void:
 	await RenderingServer.frame_post_draw
 	root.get_texture().get_image().save_png("res://screenshots/landscape.png")
 	for button in scene.find_children("*","Button",true,false):
+		if not button.is_visible_in_tree(): continue
 		assert(button.get_global_rect().end.x<=845 and button.get_global_rect().end.y<=391,"Landscape button clipped: "+button.text)
 	print("Rendered desktop, portrait and landscape; all phone buttons within viewport")
 	quit()

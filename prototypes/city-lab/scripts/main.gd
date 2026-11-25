@@ -1,5 +1,6 @@
 extends Control
 const City = preload("res://scripts/city.gd")
+const BUILDING_ATLAS = preload("res://assets/buildings-atlas.png")
 var city = City.new()
 var zoom = 0.3
 var centre = Vector2(2160,1680)
@@ -37,12 +38,19 @@ var touch_start = Vector2.ZERO
 var touch_moved = false
 var last_narrow = false
 var narrow = false
+var mobile_layout = OS.has_feature("android") or OS.has_feature("ios")
+var van_button: Button
 var ui_font = ThemeDB.fallback_font
 
 func _ready() -> void:
+	if mobile_layout:
+		# Logical UI size keeps touch targets readable on high-density phone screens.
+		get_window().content_scale_size = Vector2i(800,400)
+		get_window().content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+		get_window().content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var theme_new = Theme.new()
-	theme_new.default_font_size = 16
+	theme_new.default_font_size = 18 if mobile_layout else 16
 	var style = StyleBoxFlat.new()
 	style.bg_color = Color("172b30")
 	style.set_corner_radius_all(8)
@@ -60,7 +68,8 @@ func _ready() -> void:
 	_build_ui()
 	city.generate(1987)
 	_layout()
-	_fit()
+	if mobile_layout: _focus_van()
+	else: _fit()
 	_update_ui()
 	resized.connect(_layout)
 
@@ -79,7 +88,7 @@ func _panel() -> PanelContainer:
 func _button(text: String, callback: Callable, parent: Node) -> Button:
 	var b = Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(44,44)
+	b.custom_minimum_size = Vector2(52,52) if mobile_layout else Vector2(44,44)
 	b.pressed.connect(callback)
 	parent.add_child(b)
 	return b
@@ -97,7 +106,7 @@ func _build_ui() -> void:
 	seed_input = LineEdit.new()
 	seed_input.text = "1987"
 	seed_input.placeholder_text = "City seed"
-	seed_input.custom_minimum_size = Vector2(68,44)
+	seed_input.custom_minimum_size = Vector2(80,52) if mobile_layout else Vector2(68,44)
 	seed_input.tooltip_text = "Same seed recreates the same city and workers."
 	row.add_child(seed_input)
 	_button("New",_generate,row)
@@ -105,8 +114,9 @@ func _build_ui() -> void:
 	_button("Fit",_fit,row)
 	_button("−",func(): _zoom_at(0.8,map_rect.get_center()),row)
 	_button("+",func(): _zoom_at(1.25,map_rect.get_center()),row)
+	van_button = _button("Van",_focus_van,row)
 	status = Label.new()
-	status.add_theme_font_size_override("font_size",13)
+	status.add_theme_font_size_override("font_size",16 if mobile_layout else 13)
 	top.add_child(status)
 	sidebar = _panel()
 	route_box = VBoxContainer.new()
@@ -124,7 +134,7 @@ func _build_ui() -> void:
 	route_info = RichTextLabel.new()
 	route_info.bbcode_enabled = true
 	route_info.custom_minimum_size.y = 90
-	route_info.add_theme_font_size_override("normal_font_size",14)
+	route_info.add_theme_font_size_override("normal_font_size",18 if mobile_layout else 14)
 	route_box.add_child(route_info)
 	var rule = HSeparator.new()
 	route_box.add_child(rule)
@@ -132,14 +142,17 @@ func _build_ui() -> void:
 	info.bbcode_enabled = true
 	info.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	info.custom_minimum_size.y = 100
-	info.add_theme_font_size_override("normal_font_size",14)
+	info.add_theme_font_size_override("normal_font_size",18 if mobile_layout else 14)
 	route_box.add_child(info)
 
 func _layout() -> void:
 	if not is_instance_valid(header): return
 	narrow = size.x < 680
 	header.position = Vector2.ZERO
-	header.size = Vector2(size.x,126)
+	var header_height = 96 if mobile_layout or (size.x>=680 and size.y<600) else 126
+	title.visible = header_height==126
+	van_button.visible = not narrow
+	header.size = Vector2(size.x,header_height)
 	if narrow:
 		title.text = "SMOKO / CITY LAB"
 		sidebar.position = Vector2(0,maxf(280,size.y-310))
@@ -148,16 +161,24 @@ func _layout() -> void:
 		route_info.custom_minimum_size.y = 60
 	else:
 		title.text = "SMOKO / CITY LAB    ·    CITY + PEOPLE + ROUTES"
-		sidebar.position = Vector2(size.x-330,126)
-		sidebar.size = Vector2(330,size.y-126)
-		map_rect = Rect2(0,126,size.x-330,size.y-126)
-		route_info.custom_minimum_size.y = 50 if size.y < 500 else 120
-		info.custom_minimum_size.y = 60 if size.y < 500 else 100
+		var panel_width = 300 if mobile_layout else 330
+		sidebar.position = Vector2(size.x-panel_width,header_height)
+		sidebar.size = Vector2(panel_width,size.y-header_height)
+		map_rect = Rect2(0,header_height,size.x-panel_width,size.y-header_height)
+		route_info.custom_minimum_size.y = 58 if size.y < 600 else 120
+		info.custom_minimum_size.y = 70 if size.y < 600 else 100
 	queue_redraw()
 
 func _fit() -> void:
 	centre = Vector2(city.width,city.height)/2
 	zoom = clampf(minf((map_rect.size.x-64)/city.width,(map_rect.size.y-100)/city.height),0.035,2.5)
+	queue_redraw()
+
+func _focus_van() -> void:
+	zoom = maxf(zoom,0.65)
+	centre = van
+	if van==Vector2.ZERO:
+		centre = map_rect.size/(2*zoom)-Vector2(55,55)/zoom
 	queue_redraw()
 
 func screen(point: Vector2) -> Vector2:
@@ -180,7 +201,8 @@ func _generate() -> void:
 	city.generate(int(seed_input.text))
 	selected = -1
 	_clear()
-	_fit()
+	if mobile_layout: _focus_van()
+	else: _fit()
 
 func _clear() -> void:
 	stops.clear()
@@ -372,12 +394,13 @@ func _update_ui() -> void:
 		route_text += "%d. %s%s\n" % [i+1,city.properties[p].name if p>=0 else "Road waypoint"," ✓" if i<leg_index else ""]
 	if route_info.text != route_text: route_info.text = route_text
 	if selected<0:
-		var instructions = "[b]A city of individual people.[/b]\n\n[color=#72c8bd]■ Commercial[/color]   [color=#d6a16c]■ Industrial[/color]\n\nRoute mode: tap buildings or streets.\nInspect mode: tap without adding stops.\nDrag to pan. Scroll / pinch / + − to zoom.\n\nEvery worker has a shift, a break, preferences and their own recent orders. The van supplies requests for free. No money, stock, loyalty or combat.\n\nStart at the north-west depot. Routes follow connected streets. Seed %d recreates this city." % city.city_seed
+		var instructions = "[b]A city of individual people.[/b]\n\n[color=#72c8bd]■ Commercial[/color]   [color=#d6a16c]■ Industrial[/color]\nNine named industrial precincts, each with its own specialty. Roads have real detours and signed dead ends.\n\nRoute mode: tap buildings or streets.\nInspect mode: tap without adding stops.\nDrag to pan. Scroll / pinch / + − to zoom.\n\nEvery worker has a shift, a break, preferences and their own recent orders. The van supplies requests for free. No money, stock, loyalty or combat.\n\nStart at the north-west depot. Routes follow connected streets. Seed %d recreates this city." % city.city_seed
 		if info.text != instructions: info.text = instructions
 		return
 	var saved_scroll = info.get_v_scroll_bar().value
 	var p = city.properties[selected]
-	var people_text = "[color=#efc56b][b]%s[/b][/color]\n%s · %d staff · %d orders today\n\n[b]Wanted now[/b]\n%s\n\n[b]People · individual schedules[/b]\n" % [p.name,p.zone,p.staff.size(),p.orders,_orders(city.demand(selected))]
+	var district_name = city.precincts[p.precinct].name if p.precinct>=0 else "Commercial neighbourhood"
+	var people_text = "[color=#efc56b][b]%s[/b][/color]\n%s\n%s · %d staff · %d orders today\n\n[b]Wanted now[/b]\n%s\n\n[b]People · individual schedules[/b]\n" % [p.name,district_name,p.zone,p.staff.size(),p.orders,_orders(city.demand(selected))]
 	for id in p.staff:
 		var w = city.workers[id]
 		var requests = city.wants(w,city.clock)
@@ -394,16 +417,18 @@ func _draw() -> void:
 	# draw UI panels above the world so off-map geometry never covers controls.
 	var land = Rect2(screen(Vector2(-30,-30)),Vector2(city.width+60,city.height+60)*zoom)
 	draw_rect(land,Color("658576"))
-	for x in range(City.COLS+1):
-		var a = screen(Vector2(x*240,0))
-		var b = screen(Vector2(x*240,city.height))
+	for road in city.roads:
+		var a = screen(road[0])
+		var b = screen(road[1])
 		draw_line(a,b,Color("26393b"),maxf(1,36*zoom))
 		if zoom>0.18: draw_line(a,b,Color("667770"),maxf(1,zoom))
-	for y in range(City.ROWS+1):
-		var a = screen(Vector2(0,y*240))
-		var b = screen(Vector2(city.width,y*240))
-		draw_line(a,b,Color("26393b"),maxf(1,36*zoom))
-		if zoom>0.18: draw_line(a,b,Color("667770"),maxf(1,zoom))
+	for endpoint in city.dead_ends:
+		var at = screen(endpoint)
+		draw_circle(at,23*zoom,Color("26393b"))
+		if zoom>0.22:
+			draw_rect(Rect2(at+Vector2(13,-14)*zoom,Vector2(16,18)*zoom),Color("598db0"))
+			draw_line(at+Vector2(21,-11)*zoom,at+Vector2(21,0)*zoom,Color.WHITE,maxf(1,3*zoom))
+			draw_line(at+Vector2(16,-11)*zoom,at+Vector2(26,-11)*zoom,Color("f5bba1"),maxf(1,4*zoom))
 	for park in city.parks:
 		var r = Rect2(screen(park.position),park.size*zoom)
 		if not map_rect.intersects(r): continue
@@ -414,22 +439,25 @@ func _draw() -> void:
 	for p in city.properties:
 		var r = Rect2(screen(p.rect.position),p.rect.size*zoom)
 		if not map_rect.intersects(r): continue
-		var industrial = p.zone=="Industrial"
-		var base = Color("c49b6f") if industrial else Color("75b5ae")
-		draw_rect(Rect2(r.position+Vector2(5,6)*zoom,r.size),Color("36514b"))
-		draw_rect(r,base.darkened(p.style*0.045))
-		if zoom>0.18:
-			draw_rect(Rect2(r.position+Vector2(7,7)*zoom,r.size-Vector2(14,14)*zoom),base.darkened(0.18))
-			if industrial:
-				for stripe in range(3):
-					var start = r.position+Vector2(12,20+stripe*20)*zoom
-					draw_line(start,start+Vector2(60,0)*zoom,base.lightened(0.2),maxf(1,2*zoom))
-			else:
-				for window in range(4):
-					draw_rect(Rect2(r.position+Vector2(14+(window%2)*36,14+(window/2)*36)*zoom,Vector2(18,18)*zoom),Color("bfdbca"))
-			var door = screen(p.access)
-			draw_line(screen(p.rect.get_center()),door,Color("d6caa0"),maxf(1,4*zoom))
+		var base = Color("a2b7a0")
+		if p.precinct>=0:
+			base = Color.from_hsv(float(city.precincts[p.precinct].theme)/9.0,0.22,0.65)
+		draw_rect(r.grow(4*zoom),base)
+		# Driveway first; the sprite covers the inner end, not the road.
+		draw_line(screen(p.rect.get_center()),screen(p.access),Color("d6caa0"),maxf(1,5*zoom))
+		var cell = BUILDING_ATLAS.get_size()/4.0
+		var source = Rect2(Vector2(p.sprite%4,p.sprite/4)*cell,cell)
+		draw_texture_rect_region(BUILDING_ATLAS,r,source)
 		if p.id==selected: draw_rect(r.grow(3),Color("fff0b3"),false,2)
+	for district in city.precincts:
+		var at = screen(district.centre-Vector2(120,120))
+		if not map_rect.has_point(at): continue
+		var words = district.name.split(" ")
+		var label = words[0]+" / "+City.INDUSTRIES[district.theme].name
+		if zoom<0.2: label = words[0]
+		var label_width = ui_font.get_string_size(label,HORIZONTAL_ALIGNMENT_LEFT,-1,12).x+12
+		draw_rect(Rect2(at-Vector2(3,14),Vector2(label_width,20)),Color("172b30"))
+		draw_string(ui_font,at+Vector2(3,1),label,HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("ffdb8a"))
 	for points in legs:
 		if points.size()>1:
 			var line = PackedVector2Array()

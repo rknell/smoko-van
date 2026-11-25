@@ -8,6 +8,22 @@ const FIRST = ["Alex", "Sam", "Charlie", "Morgan", "Jamie", "Riley", "Ash", "Tay
 const LAST = ["Kelly", "Nguyen", "Singh", "Wilson", "Brown", "Chen", "Williams", "Jones", "Patel", "Smith", "Martin", "Ryan"]
 const DRINKS = ["Flat white", "Long black", "Tea", "Iced coffee"]
 const MEALS = ["Meat pie", "Salad wrap", "Toastie", "Veggie roll"]
+const INDUSTRIES = [
+	{"name":"Engineering", "sprite":0, "mix":[0,7,12]},
+	{"name":"Freight", "sprite":1, "mix":[1,0,3]},
+	{"name":"Timber", "sprite":2, "mix":[2,0,14]},
+	{"name":"Auto Works", "sprite":3, "mix":[3,0,14]},
+	{"name":"Food Works", "sprite":4, "mix":[4,1,15]},
+	{"name":"Recycling", "sprite":5, "mix":[5,0,1]},
+	{"name":"Electronics", "sprite":6, "mix":[6,0,12]},
+	{"name":"Foundry", "sprite":7, "mix":[7,0,5]},
+	{"name":"Brewing", "sprite":15, "mix":[15,4,1]}
+]
+const BUILDINGS = ["Engineering", "Freight", "Timber", "Auto Works", "Bakery", "Recycling", "Electronics", "Foundry", "Offices", "Medical", "Market", "Design Studio", "Print House", "Accountants", "Hardware", "Brewery"]
+var roads: Array = []
+var dead_ends: Array = []
+var precincts: Array = []
+var industrial_blocks: Dictionary = {}
 var properties: Array = []
 var workers: Array = []
 var parks: Array = []
@@ -21,6 +37,8 @@ var height = ROWS * BLOCK
 
 func generate(seed_value: int) -> void:
 	city_seed = seed_value
+	precincts.clear()
+	industrial_blocks.clear()
 	properties.clear()
 	workers.clear()
 	parks.clear()
@@ -30,34 +48,53 @@ func generate(seed_value: int) -> void:
 	total_orders = 0
 	var rng = RandomNumberGenerator.new()
 	rng.seed = seed_value
-	for y in range(ROWS * 4 + 1):
-		for x in range(COLS * 4 + 1):
-			if x % 4 == 0 or y % 4 == 0:
-				graph.add_point(node_id(x,y), Vector2(x,y) * STEP)
-	for id in graph.get_point_ids():
-		var x = id % (COLS * 4 + 1)
-		var y = id / (COLS * 4 + 1)
-		for delta in [Vector2i(1,0),Vector2i(0,1)]:
-			var nx = x + delta.x
-			var ny = y + delta.y
-			var other = node_id(nx,ny)
-			if nx <= COLS*4 and ny <= ROWS*4 and graph.has_point(other):
-				graph.connect_points(id,other)
+	_generate_roads(rng)
+	# Nine separated 3x3-ish industrial islands, with commercial streets between.
+	# Shuffle their specialisms with this city's RNG, never the global RNG.
+	var themes = range(INDUSTRIES.size())
+	for i in range(themes.size()-1,0,-1):
+		var other = rng.randi_range(0,i)
+		var swap = themes[i]
+		themes[i] = themes[other]
+		themes[other] = swap
+	for row in range(3):
+		for col in range(3):
+			var anchor = Vector2i(2+col*6+rng.randi_range(0,1),[2,7,11][row])
+			var theme_id = themes[row*3+col]
+			var district = {"id":precincts.size(), "name":["Gumtree", "Banksia", "Ironbark", "Wattle", "Cockatoo", "Bottlebrush", "Kookaburra", "Redgum", "Possum"][row*3+col]+" "+INDUSTRIES[theme_id].name+" Park", "theme":theme_id, "centre":(Vector2(anchor)+Vector2(0.5,0.5))*BLOCK, "blocks":[]}
+			for dy in range(-1,2):
+				for dx in range(-1,2):
+					if abs(dx)+abs(dy)==2 and rng.randf()<0.3: continue
+					var block = anchor+Vector2i(dx,dy)
+					industrial_blocks[block] = district.id
+					district.blocks.append(block)
+			precincts.append(district)
 	for by in range(ROWS):
 		for bx in range(COLS):
 			var origin = Vector2(bx,by) * BLOCK
-			if rng.randf() < 0.10:
+			if not industrial_blocks.has(Vector2i(bx,by)) and rng.randf() < 0.10:
 				parks.append(Rect2(origin+Vector2(24,24),Vector2(192,192)))
 				continue
-			var industrial = (float(bx)/COLS + float(by)/ROWS * 0.25 + rng.randf_range(-0.25,0.25)) > 0.67
+			var district_id = industrial_blocks.get(Vector2i(bx,by),-1)
+			var industrial = district_id>=0
 			for q in range(4):
 				var px = q % 2
 				var py = q / 2
 				var rect = Rect2(origin+Vector2(28+px*100,28+py*100),Vector2(84,84))
-				var access = origin+Vector2(60+px*120,0 if py==0 else BLOCK)
-				var names = ["Engineering", "Freight", "Fabrication", "Timber", "Auto Works"] if industrial else ["Design Studio", "Medical", "Accountants", "Market", "Print House"]
-				var name = ["Wattle", "Banksia", "Ironbark", "River", "Coastal", "Southern"][rng.randi_range(0,5)] + " " + names[rng.randi_range(0,4)]
-				var p = {"id":properties.size(), "name":name, "zone":"Industrial" if industrial else "Commercial", "rect":rect, "access":access, "staff":[], "style":rng.randi_range(0,3), "orders":0}
+				var choices = [origin+Vector2(60+px*120,0 if py==0 else BLOCK), origin+Vector2(0 if px==0 else BLOCK,60+py*120)]
+				var access = Vector2.INF
+				for candidate in choices:
+					if road_point(candidate).is_equal_approx(candidate):
+						access = candidate
+						break
+				# No road on either frontage: leave this corner as open green space.
+				if access==Vector2.INF: continue
+				var sprite = [8,9,10,11,12,13,14][rng.randi_range(0,6)]
+				if industrial:
+					var industry = INDUSTRIES[precincts[district_id].theme]
+					sprite = industry.sprite if rng.randf()<0.75 else industry.mix[rng.randi_range(0,industry.mix.size()-1)]
+				var name = ["Wattle", "Banksia", "Ironbark", "River", "Coastal", "Southern"][rng.randi_range(0,5)] + " " + BUILDINGS[sprite]
+				var p = {"id":properties.size(), "name":name, "zone":"Industrial" if industrial else "Commercial", "precinct":district_id, "sprite":sprite, "rect":rect, "access":access, "staff":[], "style":rng.randi_range(0,3), "orders":0}
 				var count = rng.randi_range(12,36) if industrial else rng.randi_range(5,22)
 				for j in range(count):
 					var start = rng.randi_range(360,420) if industrial else rng.randi_range(480,540)
@@ -65,6 +102,96 @@ func generate(seed_value: int) -> void:
 					p.staff.append(worker.id)
 					workers.append(worker)
 				properties.append(p)
+
+func _generate_roads(rng: RandomNumberGenerator) -> void:
+	roads.clear()
+	dead_ends.clear()
+	var junctions = AStar2D.new()
+	for y in range(ROWS+1):
+		for x in range(COLS+1):
+			junctions.add_point(y*(COLS+1)+x,Vector2(x,y)*BLOCK)
+	# Randomised depth-first spanning tree guarantees a connected city.
+	var visited = {0:true}
+	var stack = [0]
+	while not stack.is_empty():
+		var current = stack[-1]
+		var x = current%(COLS+1)
+		var y = current/(COLS+1)
+		var neighbours = []
+		for offset in [Vector2i(1,0),Vector2i(-1,0),Vector2i(0,1),Vector2i(0,-1)]:
+			var next = Vector2i(x,y)+offset
+			var id = next.y*(COLS+1)+next.x
+			if next.x>=0 and next.x<=COLS and next.y>=0 and next.y<=ROWS and not visited.has(id): neighbours.append(id)
+		if neighbours.is_empty():
+			stack.pop_back()
+		else:
+			var next = neighbours[rng.randi_range(0,neighbours.size()-1)]
+			junctions.connect_points(current,next)
+			visited[next]=true
+			stack.append(next)
+	# Extra links create alternative routes, without restoring a perfect lattice.
+	for id in junctions.get_point_ids():
+		var x = id%(COLS+1)
+		var y = id/(COLS+1)
+		for offset in [Vector2i(1,0),Vector2i(0,1)]:
+			var next = Vector2i(x,y)+offset
+			var other = next.y*(COLS+1)+next.x
+			if next.x<=COLS and next.y<=ROWS and not junctions.are_points_connected(id,other) and rng.randf()<0.32:
+				junctions.connect_points(id,other)
+	# Every block keeps at least one frontage. This never removes connectivity.
+	for y in range(ROWS):
+		for x in range(COLS):
+			var nw = y*(COLS+1)+x
+			var borders = [[nw,nw+1],[nw,nw+COLS+1],[nw+1,nw+COLS+2],[nw+COLS+1,nw+COLS+2]]
+			var accessible = false
+			for edge in borders:
+				if junctions.are_points_connected(edge[0],edge[1]): accessible=true
+			if not accessible:
+				var edge = borders[rng.randi_range(0,3)]
+				junctions.connect_points(edge[0],edge[1])
+	# Keep a visible set of cul-de-sacs even when the extra loops joined most leaves.
+	var candidates = Array(junctions.get_point_ids())
+	for i in range(candidates.size()-1,0,-1):
+		var j = rng.randi_range(0,i)
+		var swap = candidates[i]
+		candidates[i]=candidates[j]
+		candidates[j]=swap
+	var dead_count = 0
+	for id in candidates:
+		if junctions.get_point_connections(id).size()==1: dead_count+=1
+	for id in candidates:
+		if dead_count>=12: break
+		if junctions.get_point_connections(id).size()!=2: continue
+		for other in junctions.get_point_connections(id):
+			junctions.disconnect_points(id,other)
+			if junctions.get_id_path(id,other).is_empty() or not _all_blocks_have_frontage(junctions):
+				junctions.connect_points(id,other)
+			else:
+				dead_count+=1
+				if junctions.get_point_connections(other).size()==1: dead_count+=1
+				break
+	# Expand each retained street into the fine graph used by vehicles and stops.
+	for id in junctions.get_point_ids():
+		var from = junctions.get_point_position(id)
+		if junctions.get_point_connections(id).size()==1: dead_ends.append(from)
+		for other in junctions.get_point_connections(id):
+			if other<id: continue
+			var to = junctions.get_point_position(other)
+			roads.append([from,to])
+			var previous = -1
+			for segment in range(5):
+				var at = from.lerp(to,segment/4.0)
+				var fine_id = node_id(roundi(at.x/STEP),roundi(at.y/STEP))
+				if not graph.has_point(fine_id): graph.add_point(fine_id,at)
+				if previous>=0: graph.connect_points(previous,fine_id)
+				previous=fine_id
+
+func _all_blocks_have_frontage(junctions: AStar2D) -> bool:
+	for y in range(ROWS):
+		for x in range(COLS):
+			var nw = y*(COLS+1)+x
+			if not (junctions.are_points_connected(nw,nw+1) or junctions.are_points_connected(nw,nw+COLS+1) or junctions.are_points_connected(nw+1,nw+COLS+2) or junctions.are_points_connected(nw+COLS+1,nw+COLS+2)): return false
+	return true
 
 func node_id(x: int,y: int) -> int:
 	return y * (COLS*4+1) + x

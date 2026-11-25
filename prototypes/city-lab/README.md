@@ -4,7 +4,7 @@ A fresh **Godot 4.7.2 / GDScript** experiment. The original browser game at the 
 
 ## Open and run
 
-Import `project.godot` into Godot 4.7.2 and press F6/F5. The project uses the Compatibility renderer and no external assets, plugins or packages.
+Import `project.godot` into Godot 4.7.2 and press F6/F5. The project uses the Compatibility renderer, an original generated building atlas, and no third-party plugins or packages.
 
 ```sh
 godot --path prototypes/city-lab
@@ -31,7 +31,7 @@ Native Linux export is also configured. Godot can target Windows, macOS, Android
 - **New:** regenerate the entered integer seed. **Shuffle:** choose a fresh seed. Both discard the current prototype route and reset the population.
 - **Route:** tap/click a building to inspect it and append a service stop. Tap a street to append a road waypoint. Paths start at the north-west depot and automatically follow streets between your points.
 - Toggle **Route / Inspect** to inspect without changing the route.
-- **Drag** to pan; **wheel, pinch or +/−** to zoom. **Fit** shows the whole city.
+- **Drag** to pan; **wheel, pinch or +/−** to zoom. **Fit** shows the whole city; **Van** returns to a close-up of your vehicle.
 - **Drive / Pause / Resume:** run or pause the van and population clock. **1× / 4×:** simulation speed.
 - **Undo:** remove the last planned stop. **Clear:** stop the run and clear its route. Clear preserves the day's worker orders; it is not a new day.
 - **Next day:** keep the route and workers, reset their appetites and the van, and return to 07:30. Routes can then be edited again.
@@ -39,7 +39,9 @@ Native Linux export is also configured. Godot can target Windows, macOS, Android
 
 ## Model
 
-The seeded city spans 4.32 × 3.36 km: 18 × 14 blocks, typically 900 properties and 17,000 workers. A clustered industrial east/south and commercial west/north mix is interrupted by parks. Streets form a connected grid; the seed changes zoning, properties, parks, businesses and people, not the road topology. Each property has its own accessible road entrance. A* computes routes on road nodes spaced 60 metres apart.
+The seeded city spans 4.32 × 3.36 km, with roughly 850–950 properties and 14,000–16,000 workers. Nine separated, named industrial precincts specialise in engineering, freight, timber, auto repair, food, recycling, electronics, foundry work and brewing. Commercial properties and parks separate them. Sixteen building sprites match each property's business type.
+
+Streets are orthogonal but incomplete: a seeded spanning tree guarantees connectivity, extra links make loops, and selected removable links create cul-de-sacs without isolating blocks. Missing streets form longer blocks and real route detours. Blue dead-end signs mark turning areas. Property placement requires an actual adjoining frontage, so unserved corners remain open space. Drawing and A* use the same road network; vehicles cannot cross missing links. The seed reproduces roads, precincts, buildings and workers.
 
 Each worker has a stable ID, name, workplace, shift, coffee break, lunch time, preferred drink and preferred meal. They are individual data records rather than thousands of scene nodes. Workers currently remain at their workplace; walking, commutes and pedestrian sprites are future layers.
 
@@ -58,10 +60,10 @@ Checks cover deterministic generation, both zones, population scale, worker owne
 
 - `scripts/city.gd`: city generation, road graph, people and demand. Independent of the UI.
 - `scripts/main.gd`: procedural drawing, responsive controls, route editing and van movement.
-- `export_presets.cfg`: single-threaded Web and native Linux targets.
+- `export_presets.cfg`: single-threaded Web, native Linux and Android targets.
 - `tests/`: headless model and scene integration tests.
 
-Deliberately provisional: grid road topology, placeholder procedural art, no route autosave, no traffic or walking workers, no multiple vans, no economic simulation. The first playtest should answer whether city scale, map navigation and placing a useful route feel good. Economics can then attach to actual individual requests without replacing the population model.
+Deliberately provisional: orthogonal roads, no route autosave, no traffic or walking workers, no multiple vans, no economic simulation. The first playtest should answer whether city scale, map navigation and placing a useful route feel good. Economics can then attach to actual individual requests without replacing the population model.
 
 ### Verification in this workspace
 
@@ -87,3 +89,12 @@ godot --headless --path prototypes/city-lab --script tests/touch_test.gd
 ```
 
 Godot's local debug keystore signs this test package; do not commit keystores. The preset includes ARM32 and ARM64 and has no internet permission. Gesture tests cover pinch anchoring, panning, release over UI, avoiding accidental route points, single taps and bounded zoom.
+
+
+## v0.1.1 — landscape city update
+
+Android supports either landscape orientation, a density-independent 800×400 logical UI, larger 52-unit buttons, larger text and a compact header. It opens zoomed into the depot neighbourhood rather than fitting the whole city into a phone screen. Pinch, +/−, Fit and Van remain available.
+
+This update also includes the sixteen generated building sprites, nine industrial precincts, and irregular connected streets with cul-de-sacs. Tests check deterministic road generation, genuine detours, dead ends, reachable property entrances, cluster separation, all sprite mappings, input gestures and high-density phone layouts. APK version code is 2, signed with the same local debug key as v0.1.0. Native physical-device testing remains outstanding.
+
+Asset provenance and the full built-in image-generation prompt are in [assets/README.md](assets/README.md).

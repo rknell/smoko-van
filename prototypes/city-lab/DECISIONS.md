@@ -8,7 +8,7 @@ Can placing and observing a van route through a city feel natural on both mouse 
 
 - Godot 4.7.2, GDScript and the Compatibility renderer.
 - A reproducible seeded city, with commercial and industrial districts and parks.
-- Approximately 900 properties and 17,000 persistent-in-session individual people.
+- Approximately 900 properties and 15,000 persistent-in-session individual people.
 - A street graph shared by generated property access and van pathfinding.
 - Tap-to-append route points, pan/zoom, undo/clear, automatic movement and property inspection.
 - Free fulfilment of individual requests to make the population model observable.
@@ -16,7 +16,7 @@ Can placing and observing a van route through a city feel natural on both mouse 
 
 ## Deliberate simplifications
 
-The generator randomises district boundaries, park blocks, business mix and people on a regular connected road grid. Organic roads, terrain, road closures and traffic are later experiments. Workers are simulated individually as records, not rendered as 17,000 walking characters. Demand is deterministic from each person's schedule/preferences and recent service. Prices, budgets and willingness-to-pay are absent.
+The generator creates nine separated industrial precincts and a seeded orthogonal road network with omitted connections, loops and dead ends. Every property retains reachable frontage. Curved roads, terrain and traffic are later experiments. Workers are simulated individually as records, not rendered as 17,000 walking characters. Demand is deterministic from each person's schedule/preferences and recent service. Prices, budgets and willingness-to-pay are absent.
 
 Routes begin at the north-west depot, terminate at the last selected point, and are edited before departure. Pausing is for inspection; clear or next day enables editing again. Seeds reproduce cities, but routes are not saved across app restarts yet.
 
@@ -33,3 +33,7 @@ No later layer is a prerequisite for testing this one.
 ## Engine references
 
 Godot's [renderer overview](https://docs.godotengine.org/en/stable/tutorials/rendering/renderers.html) identifies Compatibility as suitable for 2D and web/mobile targets. Its [web export guide](https://docs.godotengine.org/en/stable/tutorials/export/exporting_for_web.html) documents single-threaded web builds and WebGL 2 requirements. Native mobile SDK/signing setup is a separate packaging task.
+
+## Landscape and city character update
+
+Android now scales the UI independently of physical display pixels and runs in either landscape orientation. Close-up camera framing and 52-unit buttons make properties and controls usable on phones. Sixteen generated building sprites are mapped to business types. Industrial specialisms are shuffled across nine separated precincts; commercial areas provide buffers. Road generation preserves connectivity and actual property access while creating measurable detours.
