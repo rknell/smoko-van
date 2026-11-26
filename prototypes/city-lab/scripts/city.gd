@@ -6,7 +6,8 @@ const COLS = 18
 const ROWS = 14
 const FIRST = ["Alex", "Sam", "Charlie", "Morgan", "Jamie", "Riley", "Ash", "Taylor", "Billie", "Jordan", "Casey", "Drew", "Lee", "Frankie", "Pat", "Jess"]
 const LAST = ["Kelly", "Nguyen", "Singh", "Wilson", "Brown", "Chen", "Williams", "Jones", "Patel", "Smith", "Martin", "Ryan"]
-const DRINKS = ["Flat white", "Long black", "Tea", "Iced coffee"]
+const DRINKS = ["Hot flat white", "Prepackaged iced coffee", "Coke"]
+const STARTING_ITEMS = ["Hot flat white"]
 const PERIODS = [
 	{"name":"Early morning", "start":360, "end":540},
 	{"name":"Morning", "start":540, "end":660},
@@ -14,7 +15,8 @@ const PERIODS = [
 	{"name":"Afternoon", "start":840, "end":1080}
 ]
 var depot = Vector2.ZERO
-const MEALS = ["Meat pie", "Salad wrap", "Toastie", "Veggie roll"]
+const MEALS = ["Sausage roll", "Pie", "Salad", "Sandwich"]
+const MIN_TURNOUT = 0.70
 const INDUSTRIES = [
 	{"name":"Engineering", "sprite":0, "mix":[0,7,12]},
 	{"name":"Freight", "sprite":1, "mix":[1,0,3]},
@@ -34,6 +36,8 @@ var industrial_blocks: Dictionary = {}
 var properties: Array = []
 var workers: Array = []
 var parks: Array = []
+var town_blocks: Dictionary[Vector2i,bool] = {}
+var undeveloped_areas: Array[Rect2] = []
 var graph = AStar2D.new()
 var city_seed: int
 var total_orders = 0
@@ -43,7 +47,6 @@ var width = COLS * BLOCK
 var height = ROWS * BLOCK
 
 func generate(seed_value: int) -> void:
-	depot = Vector2.ZERO
 	city_seed = seed_value
 	precincts.clear()
 	industrial_blocks.clear()
@@ -56,7 +59,16 @@ func generate(seed_value: int) -> void:
 	total_orders = 0
 	var rng = RandomNumberGenerator.new()
 	rng.seed = seed_value
+	_generate_town_limits(rng)
+	# These gaps between the possible precinct footprints can hold whole fields.
+	undeveloped_areas.assign([
+		Rect2(Vector2(rng.randi_range(2,4),4)*BLOCK,Vector2(rng.randi_range(2,3),2)*BLOCK),
+		Rect2(Vector2(rng.randi_range(11,13),4)*BLOCK,Vector2(rng.randi_range(2,3),2)*BLOCK),
+		Rect2(Vector2(5,rng.randi_range(7,9))*BLOCK,Vector2(2,rng.randi_range(2,3))*BLOCK),
+		Rect2(Vector2(11,rng.randi_range(7,9))*BLOCK,Vector2(2,rng.randi_range(2,3))*BLOCK)
+	])
 	_generate_roads(rng)
+	depot = road_point(Vector2(width,height)/2)
 	# Nine separated 3x3-ish industrial islands, with commercial streets between.
 	# Shuffle their specialisms with this city's RNG, never the global RNG.
 	var themes = range(INDUSTRIES.size())
@@ -74,12 +86,15 @@ func generate(seed_value: int) -> void:
 				for dx in range(-1,2):
 					if abs(dx)+abs(dy)==2 and rng.randf()<0.3: continue
 					var block = anchor+Vector2i(dx,dy)
+					if not town_blocks.has(block): continue
 					industrial_blocks[block] = district.id
 					district.blocks.append(block)
 			precincts.append(district)
 	for by in range(ROWS):
 		for bx in range(COLS):
+			if not town_blocks.has(Vector2i(bx,by)): continue
 			var origin = Vector2(bx,by) * BLOCK
+			if _inside_undeveloped_area(origin+Vector2.ONE*BLOCK/2): continue
 			if not industrial_blocks.has(Vector2i(bx,by)) and rng.randf() < 0.10:
 				parks.append(Rect2(origin+Vector2(24,24),Vector2(192,192)))
 				continue
@@ -105,9 +120,14 @@ func generate(seed_value: int) -> void:
 				var p = {"id":properties.size(), "name":name, "zone":"Industrial" if industrial else "Commercial", "precinct":district_id, "sprite":sprite, "rect":rect, "access":access, "staff":[], "style":rng.randi_range(0,3), "orders":0}
 				p["customer"] = rng.randf() >= 0.28
 				var count = rng.randi_range(12,36) if industrial else rng.randi_range(5,22)
+				if industrial and rng.randf()<0.05:
+					count = rng.randi_range(60,200)
+				var drinks = _business_choices(DRINKS,rng)
+				var meals = _business_choices(MEALS,rng)
+				p["menu"] = drinks+meals if p.customer else []
 				for j in range(count):
 					var start = rng.randi_range(360,420) if industrial else rng.randi_range(480,540)
-					var worker = {"id":workers.size(), "name":FIRST[rng.randi_range(0,15)]+" "+LAST[rng.randi_range(0,11)], "property":p.id, "start":start, "end":start+480, "coffee_break":start+rng.randi_range(50,110), "lunch":start+rng.randi_range(210,270), "drink":DRINKS[rng.randi_range(0,3)], "meal":MEALS[rng.randi_range(0,3)], "last_drink":-9999.0, "last_meal":-9999.0, "orders":0}
+					var worker = {"id":workers.size(), "name":FIRST[rng.randi_range(0,15)]+" "+LAST[rng.randi_range(0,11)], "property":p.id, "start":start, "end":start+480, "coffee_break":start+rng.randi_range(50,110), "lunch":start+rng.randi_range(210,270), "drink":drinks[rng.randi_range(0,drinks.size()-1)], "meal":meals[rng.randi_range(0,meals.size()-1)], "last_drink":-9999.0, "last_meal":-9999.0, "orders":0}
 					worker["drink_periods"] = []
 					worker["meal_periods"] = []
 					worker["served_drinks"] = []
@@ -124,16 +144,61 @@ func generate(seed_value: int) -> void:
 				properties.append(p)
 	_prepare_day()
 
+func _business_choices(items: Array, rng: RandomNumberGenerator) -> Array:
+	var available = items.duplicate()
+	var choices = [available.pop_at(rng.randi_range(0,available.size()-1))]
+	if rng.randf()<0.5:
+		choices.append(available[rng.randi_range(0,available.size()-1)])
+	return choices
+
+func _inside_undeveloped_area(point: Vector2) -> bool:
+	for area in undeveloped_areas:
+		if area.grow(-1).has_point(point): return true
+	return false
+
+func _edge_insets(length: int, rng: RandomNumberGenerator) -> PackedInt32Array:
+	# Recess the corners and vary the depth and width of the open land in between.
+	var anchors = [1,rng.randi_range(3,5),length/2+rng.randi_range(-1,1),length-rng.randi_range(3,5),length-2]
+	var depths = [2,0,rng.randi_range(1,2),rng.randi_range(0,1),2]
+	var insets = PackedInt32Array()
+	insets.resize(length)
+	insets.fill(2)
+	for i in range(anchors.size()-1):
+		for at in range(anchors[i]+1,anchors[i+1]+1):
+			insets[at] = roundi(lerpf(depths[i],depths[i+1],inverse_lerp(anchors[i],anchors[i+1],at)))
+	return insets
+
+func _generate_town_limits(rng: RandomNumberGenerator) -> void:
+	town_blocks.clear()
+	var north = _edge_insets(COLS,rng)
+	var south = _edge_insets(COLS,rng)
+	var west = _edge_insets(ROWS,rng)
+	var east = _edge_insets(ROWS,rng)
+	for y in range(ROWS):
+		for x in range(west[y],COLS-east[y]):
+			if y>=north[x] and y<ROWS-south[x]:
+				town_blocks[Vector2i(x,y)] = true
+
+func _street_borders_town(from: Vector2i, to: Vector2i) -> bool:
+	var first = Vector2i(mini(from.x,to.x),mini(from.y,to.y))
+	var other = first-Vector2i(0,1) if from.y==to.y else first-Vector2i(1,0)
+	return town_blocks.has(first) or town_blocks.has(other)
+
 func _generate_roads(rng: RandomNumberGenerator) -> void:
 	roads.clear()
 	dead_ends.clear()
 	var junctions = AStar2D.new()
 	for y in range(ROWS+1):
 		for x in range(COLS+1):
-			junctions.add_point(y*(COLS+1)+x,Vector2(x,y)*BLOCK)
+			var point = Vector2(x,y)*BLOCK
+			var cell = Vector2i(x,y)
+			if not (_street_borders_town(cell,cell+Vector2i.RIGHT) or _street_borders_town(cell-Vector2i.RIGHT,cell)): continue
+			if not _inside_undeveloped_area(point):
+				junctions.add_point(y*(COLS+1)+x,point)
 	# Randomised depth-first spanning tree guarantees a connected city.
-	var visited = {0:true}
-	var stack = [0]
+	var start = junctions.get_point_ids()[0]
+	var visited = {start:true}
+	var stack = [start]
 	while not stack.is_empty():
 		var current = stack[-1]
 		var x = current%(COLS+1)
@@ -142,7 +207,7 @@ func _generate_roads(rng: RandomNumberGenerator) -> void:
 		for offset in [Vector2i(1,0),Vector2i(-1,0),Vector2i(0,1),Vector2i(0,-1)]:
 			var next = Vector2i(x,y)+offset
 			var id = next.y*(COLS+1)+next.x
-			if next.x>=0 and next.x<=COLS and next.y>=0 and next.y<=ROWS and not visited.has(id): neighbours.append(id)
+			if next.x>=0 and next.x<=COLS and junctions.has_point(id) and not visited.has(id) and _street_borders_town(Vector2i(x,y),next): neighbours.append(id)
 		if neighbours.is_empty():
 			stack.pop_back()
 		else:
@@ -157,19 +222,19 @@ func _generate_roads(rng: RandomNumberGenerator) -> void:
 		for offset in [Vector2i(1,0),Vector2i(0,1)]:
 			var next = Vector2i(x,y)+offset
 			var other = next.y*(COLS+1)+next.x
-			if next.x<=COLS and next.y<=ROWS and not junctions.are_points_connected(id,other) and rng.randf()<0.32:
+			if next.x<=COLS and junctions.has_point(other) and not junctions.are_points_connected(id,other) and _street_borders_town(Vector2i(x,y),next) and rng.randf()<0.32:
 				junctions.connect_points(id,other)
-	# Every block keeps at least one frontage. This never removes connectivity.
-	for y in range(ROWS):
-		for x in range(COLS):
-			var nw = y*(COLS+1)+x
-			var borders = [[nw,nw+1],[nw,nw+COLS+1],[nw+1,nw+COLS+2],[nw+COLS+1,nw+COLS+2]]
-			var accessible = false
-			for edge in borders:
-				if junctions.are_points_connected(edge[0],edge[1]): accessible=true
-			if not accessible:
-				var edge = borders[rng.randi_range(0,3)]
-				junctions.connect_points(edge[0],edge[1])
+	# Every developable block keeps at least one frontage.
+	for block in town_blocks:
+		if _inside_undeveloped_area((Vector2(block)+Vector2(0.5,0.5))*BLOCK): continue
+		var nw = block.y*(COLS+1)+block.x
+		var borders = [[nw,nw+1],[nw,nw+COLS+1],[nw+1,nw+COLS+2],[nw+COLS+1,nw+COLS+2]]
+		var accessible = false
+		for edge in borders:
+			if junctions.are_points_connected(edge[0],edge[1]): accessible=true
+		if not accessible:
+			var edge = borders[rng.randi_range(0,3)]
+			junctions.connect_points(edge[0],edge[1])
 	# Keep a visible set of cul-de-sacs even when the extra loops joined most leaves.
 	var candidates = Array(junctions.get_point_ids())
 	for i in range(candidates.size()-1,0,-1):
@@ -208,10 +273,10 @@ func _generate_roads(rng: RandomNumberGenerator) -> void:
 				previous=fine_id
 
 func _all_blocks_have_frontage(junctions: AStar2D) -> bool:
-	for y in range(ROWS):
-		for x in range(COLS):
-			var nw = y*(COLS+1)+x
-			if not (junctions.are_points_connected(nw,nw+1) or junctions.are_points_connected(nw,nw+COLS+1) or junctions.are_points_connected(nw+1,nw+COLS+2) or junctions.are_points_connected(nw+COLS+1,nw+COLS+2)): return false
+	for block in town_blocks:
+		if _inside_undeveloped_area((Vector2(block)+Vector2(0.5,0.5))*BLOCK): continue
+		var nw = block.y*(COLS+1)+block.x
+		if not (junctions.are_points_connected(nw,nw+1) or junctions.are_points_connected(nw,nw+COLS+1) or junctions.are_points_connected(nw+1,nw+COLS+2) or junctions.are_points_connected(nw+COLS+1,nw+COLS+2)): return false
 	return true
 
 func node_id(x: int,y: int) -> int:
@@ -238,7 +303,7 @@ func _prepare_day() -> void:
 	var rng = RandomNumberGenerator.new()
 	rng.seed = city_seed * 1000003 + day * 7919
 	for p in properties:
-		p["turnout"] = rng.randf_range(0.70,1.0)
+		p["turnout"] = rng.randf_range(MIN_TURNOUT,1.0)
 	for w in workers:
 		w["today_drinks"] = []
 		w["today_meals"] = []
@@ -265,16 +330,19 @@ func wants(w: Dictionary, at: float) -> Array:
 func demand(property_id: int, at: float = -1) -> Dictionary:
 	var result = {}
 	for id in properties[property_id].staff:
-		for item in wants(workers[id],clock if at<0 else at): result[item] = result.get(item,0)+1
+		for item in wants(workers[id],clock if at<0 else at):
+			if item in STARTING_ITEMS: result[item] = result.get(item,0)+1
 	return result
 
-func demand_summary(property_id: int, period: int) -> Vector2i:
-	var result = Vector2i.ZERO
+func demand_forecast(property_id: int, period: int) -> Dictionary:
+	var result = {}
 	if period<0: return result
 	for id in properties[property_id].staff:
 		var w = workers[id]
-		if period in w.drink_periods and not period in w.served_drinks: result.x += 1
-		if period in w.meal_periods and not period in w.served_meals: result.y += 1
+		if w.drink in STARTING_ITEMS and period in w.drink_periods and not period in w.served_drinks:
+			result[w.drink] = result.get(w.drink,0)+1
+		if w.meal in STARTING_ITEMS and period in w.meal_periods and not period in w.served_meals:
+			result[w.meal] = result.get(w.meal,0)+1
 	return result
 
 func serve(property_id: int) -> Dictionary:
@@ -282,6 +350,7 @@ func serve(property_id: int) -> Dictionary:
 	for id in properties[property_id].staff:
 		var w = workers[id]
 		for item in wants(w,clock):
+			if not item in STARTING_ITEMS: continue
 			result[item] = result.get(item,0)+1
 			if item in DRINKS: w.served_drinks.append(worker_period(w,clock))
 			else: w.served_meals.append(worker_period(w,clock))

@@ -3,9 +3,22 @@ const City = preload("res://scripts/city.gd")
 const BUILDING_ATLAS = preload("res://assets/buildings-atlas.png")
 const DRINK_ICON = preload("res://assets/drink.svg")
 const FOOD_ICON = preload("res://assets/food.svg")
+const VAN_SPRITE = preload("res://assets/coffee-van.png")
+const DEFAULT_CITY_SEED = 1987
+const STOP_MARKER_RADIUS = 11.0
+const CRUISE_SPEED = 150.0
+const TURN_SPEED = 65.0
+const DRIVEWAY_SPEED = 43.0
+const ACCELERATION = 150.0
+const BRAKING = 250.0
+const CORNER_RADIUS = 20.0
+const DRIVE_STEP = 1.0/60.0
+const GAME_MINUTES_PER_SECOND = 2.0
+const SERVICE_SECONDS = 4.0
+const CLOSING_TIME = 1080.0
+const ARRIVAL_TOLERANCE = 0.05
 var placing_depot = false
 var depot_button: Button
-var shuffle_button: Button
 var header_row: HBoxContainer
 var status_row: HBoxContainer
 var period_picker: OptionButton
@@ -17,16 +30,20 @@ var map_rect = Rect2()
 var selected = -1
 var stops: Array = []
 var legs: Array = []
+var driving_paths: Array[Curve2D] = []
+var arrival_times = PackedFloat64Array()
 var van = Vector2.ZERO
+var van_heading = 0.0
+var van_speed = 0.0
 var travelling = false
 var started = false
 var leg_index = 0
-var point_index = 1
+var leg_progress = 0.0
 var dwell = 0.0
 var distance = 0.0
 var route_mode = true
 var drag_start = Vector2.ZERO
-var dragging = false
+var drag_button = MOUSE_BUTTON_NONE
 var moved = false
 var speed = 1.0
 var refresh = 0.0
@@ -35,7 +52,6 @@ var header: PanelContainer
 var sidebar: PanelContainer
 var title: Label
 var status: Label
-var seed_input: LineEdit
 var info: RichTextLabel
 var route_info: RichTextLabel
 var run_button: Button
@@ -75,7 +91,8 @@ func _ready() -> void:
 	theme_new.set_color("font_color","Button",Color("e9eacb"))
 	theme = theme_new
 	_build_ui()
-	city.generate(1987)
+	city.generate(DEFAULT_CITY_SEED)
+	van = city.depot
 	_layout()
 	if mobile_layout: _focus_van()
 	else: _fit()
@@ -113,14 +130,7 @@ func _build_ui() -> void:
 	var row = HBoxContainer.new()
 	header_row = row
 	top.add_child(row)
-	seed_input = LineEdit.new()
-	seed_input.text = "1987"
-	seed_input.placeholder_text = "City seed"
-	seed_input.custom_minimum_size = Vector2(80,52) if mobile_layout else Vector2(68,44)
-	seed_input.tooltip_text = "Same seed recreates the same city and workers."
-	row.add_child(seed_input)
-	_button("New",_generate,row)
-	shuffle_button = _button("Shuffle",func(): seed_input.text=str(randi()%999999); _generate(),row)
+	_button("New map",_generate,row)
 	_button("Fit",_fit,row)
 	_button("−",func(): _zoom_at(0.8,map_rect.get_center()),row)
 	_button("+",func(): _zoom_at(1.25,map_rect.get_center()),row)
@@ -173,7 +183,6 @@ func _layout() -> void:
 	var header_height = 96 if mobile_layout or (size.x>=680 and size.y<600) else 126
 	title.visible = header_height==126
 	van_button.visible = not narrow and not mobile_layout
-	shuffle_button.visible = not narrow
 	var picker_parent = status_row if narrow else header_row
 	if period_picker.get_parent()!=picker_parent: period_picker.reparent(picker_parent)
 	if narrow: title.visible=false
@@ -219,12 +228,7 @@ func _zoom_at(factor: float, at: Vector2) -> void:
 	queue_redraw()
 
 func _generate() -> void:
-	if not seed_input.text.is_valid_int():
-		message = "Use a whole number for the city seed."
-		_update_ui()
-		return
-	placing_depot = false
-	city.generate(int(seed_input.text))
+	city.generate(randi())
 	selected = -1
 	_clear()
 	if mobile_layout: _focus_van()
@@ -242,12 +246,16 @@ func _clear() -> void:
 	placing_depot = false
 	stops.clear()
 	legs.clear()
+	driving_paths.clear()
+	arrival_times.clear()
 	van = city.depot
+	van_speed = 0.0
+	van_heading = 0.0
 	travelling = false
 	started = false
 	dwell = 0
 	leg_index = 0
-	point_index = 1
+	leg_progress = 0.0
 	distance = 0
 	message = "Route cleared. Tap a property or road to begin."
 	_update_ui()
@@ -261,23 +269,79 @@ func _undo() -> void:
 		_rebuild()
 	_update_ui()
 
+func _remove_stop_at(at: Vector2) -> void:
+	if started or placing_depot: return
+	var property_id = city.property_at(world(at))
+	var closest = -1
+	var closest_distance = STOP_MARKER_RADIUS
+	for i in range(stops.size()-1,-1,-1):
+		if property_id>=0 and stops[i].property==property_id:
+			closest = i
+			break
+		var marker_distance = at.distance_to(screen(legs[i][-1]))
+		if marker_distance<=STOP_MARKER_RADIUS and (closest<0 or marker_distance<closest_distance):
+			closest = i
+			closest_distance = marker_distance
+	if closest<0: return
+	stops.remove_at(closest)
+	message = "Stop %d removed." % (closest+1)
+	_rebuild()
+	_update_ui()
+
+func _entrance(property: Dictionary) -> Vector2:
+	var middle = property.rect.get_center()
+	var driveway = property.access-middle
+	var inner_half_size = property.rect.size/2-Vector2(10,10)
+	var edge = maxf(absf(driveway.x)/inner_half_size.x,absf(driveway.y)/inner_half_size.y)
+	return middle+driveway/edge
+
 func _rebuild() -> void:
 	legs.clear()
+	driving_paths.clear()
 	var previous = city.depot
+	var parked_at = previous
 	distance = 0
 	for stop in stops:
 		var points = city.path(previous,stop.point)
+		if parked_at!=previous: points.insert(0,parked_at)
+		parked_at = _entrance(city.properties[stop.property]) if stop.property>=0 else stop.point
+		if parked_at!=stop.point: points.append(parked_at)
 		legs.append(points)
-		for i in range(1,points.size()): distance += points[i-1].distance_to(points[i])
+		var path = _rounded_path(points)
+		driving_paths.append(path)
+		distance += path.get_baked_length()
 		previous = stop.point
+	_estimate_arrivals()
 	queue_redraw()
+
+func _rounded_path(points: PackedVector2Array) -> Curve2D:
+	var path = Curve2D.new()
+	path.bake_interval = 4.0
+	path.add_point(points[0])
+	for i in range(1,points.size()-1):
+		var corner = points[i]
+		var incoming = corner-points[i-1]
+		var outgoing = points[i+1]-corner
+		var alignment = incoming.normalized().dot(outgoing.normalized())
+		if alignment>0.999: continue
+		if alignment< -0.98:
+			path.add_point(corner)
+			continue
+		var radius = minf(CORNER_RADIUS,minf(incoming.length(),outgoing.length())*0.45)
+		var entry = corner-incoming.normalized()*radius
+		var exit = corner+outgoing.normalized()*radius
+		# Control handles reproduce a quadratic arc through the street junction.
+		path.add_point(entry,Vector2.ZERO,(corner-entry)*2.0/3.0)
+		path.add_point(exit,(corner-exit)*2.0/3.0)
+	if points.size()>1: path.add_point(points[-1])
+	return path
 
 func _toggle_drive() -> void:
 	if placing_depot:
 		message = "Place your depot or tap Cancel before driving."
 		_update_ui()
 		return
-	if city.clock >= 1080:
+	if city.clock >= CLOSING_TIME:
 		message = "Day finished. Start the next day to drive again."
 	elif stops.is_empty():
 		message = "Add a property or road waypoint first."
@@ -293,12 +357,15 @@ func _next_day() -> void:
 	placing_depot = false
 	city.next_day()
 	van = city.depot
+	van_speed = 0.0
+	van_heading = 0.0
 	travelling = false
 	started = false
 	leg_index = 0
-	point_index = 1
+	leg_progress = 0.0
 	dwell = 0
 	message = "New day. Same people and route; fresh appetites."
+	_estimate_arrivals()
 	_update_ui()
 	queue_redraw()
 
@@ -346,14 +413,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.button_index==MOUSE_BUTTON_WHEEL_UP and map_rect.has_point(event.position): _zoom_at(1.15,event.position)
 		if event.button_index==MOUSE_BUTTON_WHEEL_DOWN and map_rect.has_point(event.position): _zoom_at(1/1.15,event.position)
 		if event.button_index in [MOUSE_BUTTON_LEFT,MOUSE_BUTTON_MIDDLE,MOUSE_BUTTON_RIGHT]:
-			if event.pressed and map_rect.has_point(event.position):
-				dragging=true
+			if event.pressed and drag_button==MOUSE_BUTTON_NONE and map_rect.has_point(event.position):
+				drag_button=event.button_index
 				moved=false
 				drag_start=event.position
-			elif not event.pressed and dragging:
-				dragging=false
-				if not moved and event.button_index==MOUSE_BUTTON_LEFT and map_rect.has_point(event.position): _tap(world(event.position))
-	if event is InputEventMouseMotion and dragging and touch_points.size()<2:
+			elif not event.pressed and event.button_index==drag_button:
+				drag_button=MOUSE_BUTTON_NONE
+				if not moved and map_rect.has_point(event.position):
+					if event.button_index==MOUSE_BUTTON_LEFT: _tap(world(event.position))
+					elif event.button_index==MOUSE_BUTTON_RIGHT: _remove_stop_at(event.position)
+	if event is InputEventMouseMotion and drag_button!=MOUSE_BUTTON_NONE and touch_points.size()<2:
 		if event.position.distance_to(drag_start)>7: moved=true
 		if moved:
 			centre-=event.relative/zoom
@@ -385,50 +454,115 @@ func _tap(point: Vector2) -> void:
 			stops.append({"point":target,"property":selected})
 			message = "Stop %d added. Drag to explore, tap to extend." % stops.size()
 			_rebuild()
+			_update_ui(true)
+			return
 	_update_ui()
 	queue_redraw()
 
 func _process(delta: float) -> void:
 	if travelling:
 		var dt = minf(delta,0.1)*speed
-		city.clock += dt*2
-		if dwell>0:
-			dwell-=dt
-		else:
-			var budget = dt*150
-			while budget>0 and leg_index<legs.size():
-				var points = legs[leg_index]
-				if point_index>=points.size():
-					var destination = stops[leg_index]
-					if destination.property>=0:
-						var orders = city.serve(destination.property)
-						message = city.properties[destination.property].name+": "+_orders(orders)
-						dwell=4.0
-					leg_index+=1
-					point_index=1
-					break
-				var remaining = van.distance_to(points[point_index])
-				if remaining<=budget:
-					van=points[point_index]
-					budget-=remaining
-					point_index+=1
-				else:
-					van=van.move_toward(points[point_index],budget)
-					budget=0
-			if leg_index>=legs.size():
-				travelling=false
-				message += " · Route complete."
-		if city.clock>=1080:
-			travelling=false
-			message="18:00 · Day finished. Next day resets appetites and keeps your route."
+		while dt>0.0001 and travelling:
+			var step = minf(dt,DRIVE_STEP)
+			dt-=step
+			_drive_step(step)
 		queue_redraw()
 	refresh+=delta
 	if refresh>=0.5:
 		refresh=0
 		_update_ui()
 
+func _path_heading(path: Curve2D, at: float) -> float:
+	return (path.sample_baked(at+3.0)-path.sample_baked(at-3.0)).angle()
+
+func _drive_speed(index: int, progress: float, current_speed: float, dt: float) -> float:
+	var path = driving_paths[index]
+	var length = path.get_baked_length()
+	var remaining = length-progress
+	var ahead = _path_heading(path,minf(progress+32.0,length))
+	var turn = absf(angle_difference(_path_heading(path,maxf(progress-12.0,0.0)),ahead))
+	var target = lerpf(CRUISE_SPEED,TURN_SPEED,minf(1.0,turn/(PI*0.5)))
+	var property_id = stops[index].property
+	var arrival_speed = 0.0
+	if index+1<driving_paths.size() and property_id<0:
+		var exit_heading = _path_heading(driving_paths[index+1],0.0)
+		var waypoint_turn = absf(angle_difference(_path_heading(path,length),exit_heading))
+		arrival_speed = lerpf(CRUISE_SPEED,TURN_SPEED,minf(1.0,waypoint_turn/(PI*0.5)))
+	target = minf(target,sqrt(arrival_speed*arrival_speed+2.0*BRAKING*remaining))
+	if property_id>=0:
+		var driveway_length = legs[index][-1].distance_to(legs[index][-2])
+		var approach = maxf(0.0,remaining-driveway_length-CORNER_RADIUS*0.5)
+		target = minf(target,sqrt(DRIVEWAY_SPEED*DRIVEWAY_SPEED+2.0*BRAKING*approach))
+	if progress<_departure_driveway_length(index):
+		target = minf(target,DRIVEWAY_SPEED)
+	return move_toward(current_speed,target,(ACCELERATION if target>current_speed else BRAKING)*dt)
+
+func _departure_driveway_length(index: int) -> float:
+	if index==0 or stops[index-1].property<0: return 0.0
+	return legs[index][0].distance_to(legs[index][1])
+
+func _estimate_arrivals() -> void:
+	arrival_times.resize(stops.size())
+	arrival_times.fill(CLOSING_TIME)
+	var clock = city.clock
+	var current_speed = 0.0
+	for index in range(stops.size()):
+		var progress = 0.0
+		var length = driving_paths[index].get_baked_length()
+		while true:
+			clock += DRIVE_STEP*GAME_MINUTES_PER_SECOND
+			if clock>=CLOSING_TIME: return
+			if length-progress>ARRIVAL_TOLERANCE:
+				var next_speed = _drive_speed(index,progress,current_speed,DRIVE_STEP)
+				progress = minf(length,progress+(current_speed+next_speed)*0.5*DRIVE_STEP)
+				current_speed = next_speed
+			if length-progress<=ARRIVAL_TOLERANCE: break
+		arrival_times[index] = clock
+		if stops[index].property>=0:
+			current_speed = 0.0
+			clock += SERVICE_SECONDS*GAME_MINUTES_PER_SECOND
+
+func _drive_step(dt: float) -> void:
+	city.clock += dt*GAME_MINUTES_PER_SECOND
+	if city.clock>=CLOSING_TIME:
+		travelling = false
+		van_speed = 0.0
+		message = "18:00 · Day finished. Next day resets appetites and keeps your route."
+		return
+	if dwell>0:
+		dwell -= dt
+		return
+	var path = driving_paths[leg_index]
+	var path_length = path.get_baked_length()
+	var property_id = stops[leg_index].property
+	var last_stop = leg_index+1==driving_paths.size()
+	if path_length-leg_progress>ARRIVAL_TOLERANCE:
+		var backing_out = leg_progress<_departure_driveway_length(leg_index)-8.0
+		var previous_speed = van_speed
+		van_speed = _drive_speed(leg_index,leg_progress,van_speed,dt)
+		if leg_index==0 and leg_progress==0:
+			van_heading = _path_heading(path,leg_progress)
+		leg_progress = minf(path_length,leg_progress+(previous_speed+van_speed)*0.5*dt)
+		van = path.sample_baked(leg_progress)
+		var heading = _path_heading(path,leg_progress)+(PI if backing_out else 0.0)
+		van_heading = rotate_toward(van_heading,heading,TAU*1.75*dt)
+		if path_length-leg_progress>ARRIVAL_TOLERANCE: return
+	van = legs[leg_index][-1]
+	arrival_times[leg_index] = city.clock
+	if property_id>=0:
+		var orders = city.serve(property_id)
+		message = city.properties[property_id].name+": "+_orders(orders)
+		dwell = SERVICE_SECONDS
+		van_speed = 0.0
+	leg_index += 1
+	leg_progress = 0.0
+	if last_stop:
+		travelling = false
+		van_speed = 0.0
+		message += " · Route complete."
+
 func _orders(orders: Dictionary) -> String:
-	if orders.is_empty(): return "Nobody wants anything right now."
+	if orders.is_empty(): return "No orders for the current menu."
 	var parts = PackedStringArray()
 	for key in orders: parts.append("%d %s" % [orders[key],key])
 	return ", ".join(parts)
@@ -436,7 +570,7 @@ func _orders(orders: Dictionary) -> String:
 func _time(minutes: float) -> String:
 	return "%02d:%02d" % [int(minutes)/60,int(minutes)%60]
 
-func _update_ui() -> void:
+func _update_ui(show_latest_stop: bool = false) -> void:
 	if not is_instance_valid(status): return
 	var current_period = city.period_at(city.clock)
 	status.text = "Day %d · %s · %s" % [city.day,_time(city.clock),City.PERIODS[current_period].name if current_period>=0 else "Closed"]
@@ -444,45 +578,74 @@ func _update_ui() -> void:
 	var shown_period = city.period_at(city.clock) if period_picker.selected==0 else period_picker.selected-1
 	demand_badges.clear()
 	for property in city.properties:
-		if period_picker.selected==0:
-			var amounts = Vector2i.ZERO
-			var actual = city.demand(property.id)
-			for item in actual:
-				if item in City.DRINKS: amounts.x+=actual[item]
-				else: amounts.y+=actual[item]
-			demand_badges.append(amounts)
-		else: demand_badges.append(city.demand_summary(property.id,shown_period))
+		var demand = city.demand(property.id) if period_picker.selected==0 else city.demand_forecast(property.id,shown_period)
+		var categories = Vector2i.ZERO
+		for item in demand:
+			if item in City.DRINKS: categories.x = 1
+			else: categories.y = 1
+		demand_badges.append(categories)
 	queue_redraw()
 	mode_button.text = "Route ✓" if route_mode else "Inspect"
 	run_button.text = "Pause" if travelling else ("Resume" if started and leg_index<legs.size() else "Drive")
-	var route_text = "[color=#efc56b]%d STOPS · %.1f km[/color]\n%s\n" % [stops.size(),distance/1000,message]
+	var route_text = "[color=#efc56b]%d STOPS · %.1f km[/color]\n%s" % [stops.size(),distance/1000,message]
 	for i in range(stops.size()):
 		var p = stops[i].property
-		route_text += "%d. %s%s\n" % [i+1,city.properties[p].name if p>=0 else "Road waypoint"," ✓" if i<leg_index else ""]
-	if route_info.text != route_text: route_info.text = route_text
+		var arrival = arrival_times[i]
+		var time_text = "After close" if arrival>=CLOSING_TIME else _time(arrival)
+		if i>=leg_index and arrival<CLOSING_TIME: time_text = "≈ "+time_text
+		route_text += "\n%d. [color=#efc56b]%s[/color] · %s%s" % [i+1,time_text,city.properties[p].name if p>=0 else "Road waypoint"," ✓" if i<leg_index else ""]
+	if route_info.text != route_text:
+		var scrollbar = route_info.get_v_scroll_bar()
+		var previous_scroll = scrollbar.value
+		route_info.text = route_text
+		# Lay out the new text before reading the scrollbar's range.
+		route_info.get_content_height()
+		scrollbar.value = scrollbar.max_value if show_latest_stop else previous_scroll
 	if selected<0:
-		var instructions = "[b]Plan your run[/b]\n[img=22x22]res://assets/drink.svg[/img] Drinks   [img=22x22]res://assets/food.svg[/img] Food\nDots show light / steady / busy.\nPeriods are a guide, not a deadline."
+		var instructions = "[b]Serving hot flat whites[/b]\nSelect a business to see what its staff might buy. Use the demand menu to preview another period."
 		if info.text != instructions: info.text = instructions
 		return
 	var p = city.properties[selected]
-	var summary = "[color=#efc56b][b]%s[/b][/color]\n" % p.name
+	var summary = "[color=#efc56b][b]%s[/b][/color] · %d staff\n" % [p.name,p.staff.size()]
 	if not p.customer:
 		summary += "No van customers here."
 	else:
-		for period in range(4):
-			var amounts = city.demand_summary(selected,period)
-			var line = "%s  [img=18x18]res://assets/drink.svg[/img]%s [img=18x18]res://assets/food.svg[/img]%s" % [City.PERIODS[period].name,_demand_dots(amounts.x),_demand_dots(amounts.y)]
-			if period==shown_period: line = "[color=#efc56b]"+line+"[/color]"
-			summary += line+"\n"
+		var forecast = city.demand_forecast(selected,shown_period)
+		if forecast.is_empty():
+			summary += "No orders expected for the current menu."
+		else:
+			summary += "%s · est. orders\n" % City.PERIODS[shown_period].name
+			for item in p.menu:
+				if not forecast.has(item): continue
+				var high = forecast[item]
+				var low = roundi(high*City.MIN_TURNOUT)
+				var estimate = str(high) if low==high else "%d–%d" % [low,high]
+				summary += "%s · %s\n" % [item,estimate]
 	if info.text != summary: info.text = summary
 
 func _draw() -> void:
 	if city.properties.is_empty(): return
-	draw_rect(map_rect,Color("203c3b"))
-	# All world rendering is clipped by a drawing child in future; currently cull and
-	# draw UI panels above the world so off-map geometry never covers controls.
-	var land = Rect2(screen(Vector2(-30,-30)),Vector2(city.width+60,city.height+60)*zoom)
-	draw_rect(land,Color("658576"))
+	draw_rect(map_rect,Color("53684b"))
+	# Give open country a continuous ground colour and break up the built-up edge.
+	for y in range(City.ROWS):
+		for x in range(City.COLS):
+			var block = Vector2i(x,y)
+			var ground = Rect2(screen(Vector2(block)*City.BLOCK),Vector2.ONE*City.BLOCK*zoom)
+			if not map_rect.intersects(ground): continue
+			if city.town_blocks.has(block):
+				draw_rect(ground.grow(0.25),Color("658576"))
+			else:
+				for i in range(6):
+					var shift = float(x+y*City.COLS)*0.317+i
+					var at = ground.position+Vector2(fposmod(shift*0.618,0.86)+0.07,fposmod(shift*0.409,0.86)+0.07)*ground.size
+					draw_circle(at,(4.0+2.0*(i%3))*zoom,Color("647957"),true,-1,true)
+	for area in city.undeveloped_areas:
+		var field = Rect2(screen(area.position),area.size*zoom)
+		if not map_rect.intersects(field): continue
+		draw_rect(field,Color("859461"))
+		for i in range(24):
+			var at = field.position+Vector2(fposmod(0.27+i*0.618,0.90)+0.05,fposmod(0.39+i*0.414,0.90)+0.05)*field.size
+			draw_line(at,at+Vector2(12,-8)*zoom,Color("6b7c4f"),maxf(1,4*zoom),true)
 	# Round every street endpoint, including corners and T-junctions. Draw
 	# junction caps after the road markings so lines do not cross intersections.
 	var junctions = {}
@@ -526,16 +689,14 @@ func _draw() -> void:
 			var amounts = demand_badges[p.id]
 			if amounts.x+amounts.y>0:
 				var count = int(amounts.x>0)+int(amounts.y>0)
-				var badge = Rect2(r.get_center().x-count*10,r.position.y-25,count*20,27)
+				var badge = Rect2(r.get_center().x-count*10,r.position.y-21,count*20,20)
 				draw_style_box(_badge_style(),badge)
 				var icon_x = badge.position.x
 				if amounts.x>0:
 					draw_texture_rect(DRINK_ICON,Rect2(icon_x,badge.position.y,18,18),false)
-					_draw_demand_dots(Vector2(icon_x,badge.position.y+22),amounts.x)
 					icon_x+=20
 				if amounts.y>0:
 					draw_texture_rect(FOOD_ICON,Rect2(icon_x,badge.position.y,18,18),false)
-					_draw_demand_dots(Vector2(icon_x,badge.position.y+22),amounts.y)
 	for district in city.precincts:
 		var at = screen(district.centre-Vector2(120,120))
 		if not map_rect.has_point(at): continue
@@ -545,23 +706,30 @@ func _draw() -> void:
 		var label_width = ui_font.get_string_size(label,HORIZONTAL_ALIGNMENT_LEFT,-1,12).x+12
 		draw_rect(Rect2(at-Vector2(3,14),Vector2(label_width,20)),Color("172b30"))
 		draw_string(ui_font,at+Vector2(3,1),label,HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("ffdb8a"))
-	for points in legs:
-		if points.size()>1:
-			var line = PackedVector2Array()
-			for point in points: line.append(screen(point))
-			draw_polyline(line,Color("f4c45f"),3,true)
+	draw_set_transform(screen(Vector2.ZERO),0.0,Vector2.ONE*zoom)
+	for path in driving_paths:
+		if path.get_point_count()>1:
+			draw_polyline(path.get_baked_points(),Color("f4c45f"),3.0/zoom,true)
+	draw_set_transform(Vector2.ZERO)
 	for i in range(stops.size()):
-		var at = screen(stops[i].point)
+		var at = screen(legs[i][-1])
 		if not map_rect.has_point(at): continue
-		draw_circle(at,11,Color("f4c45f") if i>=leg_index else Color("80c8b4"))
+		draw_circle(at,STOP_MARKER_RADIUS,Color("f4c45f") if i>=leg_index else Color("80c8b4"))
 		draw_string(ui_font,at+Vector2(-5,5),str(i+1),HORIZONTAL_ALIGNMENT_LEFT,-1,13,Color("192f32"))
 	var depot = screen(city.depot)
 	draw_rect(Rect2(depot-Vector2(12,12),Vector2(24,24)),Color("e7e5ca"))
-	draw_string(ui_font,depot+Vector2(16,5),"DEPOT",HORIZONTAL_ALIGNMENT_LEFT,-1,13,Color("f0edce"))
+	var depot_label_width = ui_font.get_string_size("DEPOT",HORIZONTAL_ALIGNMENT_LEFT,-1,12).x
+	var depot_label = depot+Vector2(-depot_label_width*0.5,31)
+	draw_rect(Rect2(depot_label-Vector2(4,13),Vector2(depot_label_width+8,17)),Color("172b30"))
+	draw_string(ui_font,depot_label,"DEPOT",HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("f0edce"))
 	var v = screen(van)
-	draw_circle(v,13,Color(0,0,0,0.3))
-	draw_rect(Rect2(v-Vector2(9,6),Vector2(18,12)),Color("fff2c2"))
-	draw_rect(Rect2(v+Vector2(3,-5),Vector2(4,10)),Color("276369"))
+	var sprite_length = clampf(64.0*zoom,29.0,65.0)
+	var sprite_size = Vector2(sprite_length,sprite_length*0.5)
+	draw_set_transform(v+Vector2(2,3),van_heading,Vector2(1,0.5))
+	draw_circle(Vector2.ZERO,sprite_length*0.45,Color(0,0,0,0.28),true,-1,true)
+	draw_set_transform(v,van_heading)
+	draw_texture_rect(VAN_SPRITE,Rect2(-sprite_size*0.5,sprite_size),false)
+	draw_set_transform(Vector2.ZERO)
 	# Screen-space compass and scale remain legible at city-wide zoom.
 	draw_string(ui_font,map_rect.position+Vector2(18,26),"N ↑   /   WATTLE METRO",HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color("f0edce"))
 	draw_string(ui_font,map_rect.end-Vector2(165,16),"%.0f m / 100 px" % (100/zoom),HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("f0edce"))
@@ -572,17 +740,3 @@ func _badge_style() -> StyleBoxFlat:
 	style.bg_color = Color("172b30")
 	style.set_corner_radius_all(5)
 	return style
-
-func _demand_level(amount: int) -> int:
-	if amount<=0: return 0
-	if amount<=5: return 1
-	if amount<=14: return 2
-	return 3
-
-func _demand_dots(amount: int) -> String:
-	return ["–","•","••","•••"][_demand_level(amount)]
-
-func _draw_demand_dots(at: Vector2, amount: int) -> void:
-	var level = _demand_level(amount)
-	for i in range(3):
-		draw_circle(at+Vector2(4+i*5,0),1.7,Color("ffdb8a") if i<level else Color("4d6668"),true,-1,true)
